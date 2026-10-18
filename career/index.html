@@ -1175,7 +1175,8 @@ const ACC = (() => {
   document.addEventListener('visibilitychange', () => { if (document.hidden) flushProgress(); });
   const cloud = {
     async ready() {
-      await loadLib(); sb = window.supabase.createClient(CLOUD.url, CLOUD.key, {auth: {persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, flowType: 'implicit'}, global: {fetch: (u, o) => fetch(u, Object.assign({}, o, {keepalive: !!(o && o.method && !/^(GET|HEAD)$/i.test(o.method) && !(typeof o.body === 'string' && o.body.length > 60000))}))}});
+      // lock: the browser-wide login lock can stay held by a sleeping or background tab and freeze every request in this one; each tab runs its own
+      await loadLib(); sb = window.supabase.createClient(CLOUD.url, CLOUD.key, {auth: {persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, flowType: 'implicit', lock: (name, wait, fn) => fn()}, global: {fetch: (u, o) => fetch(u, Object.assign({}, o, {keepalive: !!(o && o.method && !/^(GET|HEAD)$/i.test(o.method) && !(typeof o.body === 'string' && o.body.length > 60000))}))}});
       sb.auth.onAuthStateChange(ev => { if (ev === 'PASSWORD_RECOVERY') { recovering = true; if (cloud.onRecovery) cloud.onRecovery(); } });
       const {data} = await sb.auth.getSession();
       if (data.session && await needsCode()) { mfaPending = true; return; }
