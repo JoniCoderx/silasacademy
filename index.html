@@ -929,6 +929,9 @@ input[dir=ltr]:placeholder-shown{direction:rtl;text-align:right}
 .fields>.field:only-child{grid-column:1/-1}
 .mfaqr{background:#fff;border-radius:12px;padding:10px;display:inline-block;margin:6px 0}.mfaqr img{display:block}
 .capbox{min-height:65px;margin:4px 0}
+.cheatbox h4{margin-bottom:6px}.ll.cheat li{margin:6px 0;line-height:1.6}
+.reveal{font:inherit;font-size:.8rem;font-weight:700;border:1px dashed var(--accent);color:var(--accent);background:var(--accent-soft);border-radius:8px;padding:1px 10px;cursor:pointer}
+@media print{.top,.tabs,#wa,footer.site,.crumbs,header.page .row{display:none!important}.panel{break-inside:avoid;box-shadow:none;border:1px solid #ccc}}
 </style>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
   <linearGradient id="bm-bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2a3cc2"/><stop offset="1" stop-color="#121a66"/></linearGradient>
@@ -1389,6 +1392,8 @@ const COURSES = [
    blurb: 'הכנה מלאה למבחן: שיעורים מאפס, סרטוני הסבר, ותרגול עם פתרון מלא לכל שאלה.', facts: []},
   {id: 'corp-law', open: true, href: '/corporate/', title: 'דיני תאגידים', tag: 'משפטים',
    blurb: 'חוק החברות מאפס ועד המבחן: אישיות משפטית, אורגנים, חובות נושאי משרה, עסקאות בעלי עניין, חלוקה וניירות ערך.', facts: ['יחידות לימוד מאפס', 'שאלות מקרה עם תשובת מופת', 'מבחני עבר פתורים', 'מחולל מסלולי אישור']},
+  {id: 'career', open: true, href: '/career/', title: 'ניהול קריירות בארגונים', tag: 'ניהול ומשאבי אנוש',
+   blurb: 'כל המודלים של הקורס בשפה פשוטה: הולנד, שיין, דרייבר, גרינהאוס, חמשת הגדולים, קבלת החלטות ופוליטיקה ארגונית.', facts: ['שליפים לזכירה מהירה', 'המבחן לדוגמה פתור', 'מבחני אימון עם הסברים', 'תוכנית לערב המבחן']},
   {id: 'next', open: false, title: 'קורסים נוספים', tag: 'בקרוב', blurb: 'קורסים חדשים יעלו כאן בקרוב.', facts: []}
 ];
 
@@ -5630,7 +5635,10 @@ document.addEventListener('click', e => {
 });
 const LOGO_S = `<svg class="alogo" viewBox="0 0 64 64" aria-hidden="true"><use href="#brandmark"/></svg>`;
 // course cover art: a bell curve over an answer-sheet row, the marked bubble in highlighter yellow
-const COVER = {'corp-law': `<svg viewBox="0 0 400 112" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+const COVER = {'career': `<svg viewBox="0 0 400 112" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+  <g stroke="rgb(255 255 255 / .07)">${[...Array(15)].map((_, k) => `<line x1="${k * 28}" y1="0" x2="${k * 28}" y2="112"/>`).join('')}${[...Array(5)].map((_, k) => `<line x1="0" y1="${k * 28}" x2="400" y2="${k * 28}"/>`).join('')}</g>
+  <path d="M110 92 H170 V72 H220 V52 H270 V32" fill="none" stroke="#8e9cff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="270" cy="32" r="7" fill="#f5d547"/><path d="M262 92 l12 -12 l12 12" fill="none" stroke="rgb(255 255 255 / .35)" stroke-width="2.5"/></svg>`, 'corp-law': `<svg viewBox="0 0 400 112" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
   <g stroke="rgb(255 255 255 / .07)">${[...Array(15)].map((_, k) => `<line x1="${k * 28}" y1="0" x2="${k * 28}" y2="112"/>`).join('')}${[...Array(5)].map((_, k) => `<line x1="0" y1="${k * 28}" x2="400" y2="${k * 28}"/>`).join('')}</g>
   <g fill="none" stroke="#8e9cff" stroke-width="3" stroke-linecap="round"><path d="M200 18 V94 M150 94 H250 M140 34 H260"/><path d="M140 34 L118 70 H162 Z M260 34 L238 70 H282 Z"/></g>
   <path d="M118 70 H162 A22 9 0 0 1 118 70 Z" fill="#f5d547" fill-opacity=".55"/><circle cx="200" cy="18" r="5.5" fill="#f5d547"/></svg>`, 'stats-finance': `<svg viewBox="0 0 400 112" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
