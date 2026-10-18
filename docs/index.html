@@ -1614,7 +1614,8 @@ const ACC = (() => {
   document.addEventListener('visibilitychange', () => { if (document.hidden) flushProgress(); });
   const cloud = {
     async ready() {
-      await loadLib(); sb = window.supabase.createClient(CLOUD.url, CLOUD.key, {auth: {persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, flowType: 'implicit'}, global: {fetch: (u, o) => fetch(u, Object.assign({}, o, {keepalive: !!(o && o.method && !/^(GET|HEAD)$/i.test(o.method) && !(typeof o.body === 'string' && o.body.length > 60000))}))}});
+      // lock: the browser-wide login lock can stay held by a sleeping or background tab and freeze every request in this one; each tab runs its own
+      await loadLib(); sb = window.supabase.createClient(CLOUD.url, CLOUD.key, {auth: {persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, flowType: 'implicit', lock: (name, wait, fn) => fn()}, global: {fetch: (u, o) => fetch(u, Object.assign({}, o, {keepalive: !!(o && o.method && !/^(GET|HEAD)$/i.test(o.method) && !(typeof o.body === 'string' && o.body.length > 60000))}))}});
       sb.auth.onAuthStateChange(ev => { if (ev === 'PASSWORD_RECOVERY') { recovering = true; if (cloud.onRecovery) cloud.onRecovery(); } });
       const {data} = await sb.auth.getSession();
       if (data.session && await needsCode()) { mfaPending = true; return; }
@@ -5583,6 +5584,7 @@ function go(v, opts) {
   try { const h = v === 'learn' && opts && opts.topic ? `learn-${opts.topic}` : v, clean = CLEAN_VIEWS.includes(v) ? '' : h; if (!go.pop && location.hash.slice(1) !== clean) history.pushState({v, topic: opts && opts.topic}, '', clean ? '#' + clean : location.pathname + location.search); } catch (e) {}
 }
 function render(opts = {}) {
+  if (view !== 'admin') document.body.classList.remove('adlock'); // leaving the admin (also with the back button) never leaves the page unscrollable
   const m = $('#main'); document.body.dataset.view = view; // lets the support button shrink on busy screens
   const bu = ACC.user(); if (bu && bu.blocked && view !== 'login') { $('#tabs').hidden = true; $('#cbar').hidden = true; return vBlocked(m, bu); }
   ({home: vHome, login: vLogin, reset: vReset, account: vAccount, admin: vAdmin, dash: vDash, learn: vLearn, practice: vPractice, exam: vExam, mistakes: vMistakes, formulas: vFormulas, tools: vTools, videos: vVideos})[view](m, opts);
@@ -6718,6 +6720,9 @@ document.addEventListener('keydown', e => {
 });
 function setHdr() { const h = document.querySelector('.top'); if (h) document.documentElement.style.setProperty('--hdr', h.offsetHeight + 'px'); }
 window.addEventListener('resize', setHdr);
+// the admin is told about any failure, so nothing ever just silently stops responding
+const adminOops = x => { try { const u = ACC.user(), msg = String((x && (x.message || x.reason && x.reason.message || x.reason)) || ''); if (/ResizeObserver|^Script error|AbortError/i.test(msg)) return; if (u && u.isAdmin && view === 'admin') toast('משהו נכשל: ' + String((x && (x.message || x.reason && x.reason.message || x.reason)) || x).slice(0, 120) + '. לחצו על רענון.'); } catch (e) {} };
+window.addEventListener('unhandledrejection', adminOops); window.addEventListener('error', adminOops);
 window.addEventListener('popstate', e => {
   const st = e.state || {}, h = location.hash.slice(1), mm = h.match(/^learn-(\w+)$/);
   const v = st.v || (mm ? 'learn' : ROUTES.includes(h) ? h : 'home'), topic = st.topic || (mm && mm[1]);
