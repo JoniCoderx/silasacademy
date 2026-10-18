@@ -1614,7 +1614,7 @@ const ACC = (() => {
   document.addEventListener('visibilitychange', () => { if (document.hidden) flushProgress(); });
   const cloud = {
     async ready() {
-      await loadLib(); sb = window.supabase.createClient(CLOUD.url, CLOUD.key, {auth: {persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, flowType: 'implicit'}, global: {fetch: (u, o) => fetch(u, Object.assign({}, o, {keepalive: !(o && typeof o.body === 'string' && o.body.length > 60000)}))}});
+      await loadLib(); sb = window.supabase.createClient(CLOUD.url, CLOUD.key, {auth: {persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, flowType: 'implicit'}, global: {fetch: (u, o) => fetch(u, Object.assign({}, o, {keepalive: !!(o && o.method && !/^(GET|HEAD)$/i.test(o.method) && !(typeof o.body === 'string' && o.body.length > 60000))}))}});
       sb.auth.onAuthStateChange(ev => { if (ev === 'PASSWORD_RECOVERY') { recovering = true; if (cloud.onRecovery) cloud.onRecovery(); } });
       const {data} = await sb.auth.getSession();
       if (data.session && await needsCode()) { mfaPending = true; return; }
@@ -1689,6 +1689,8 @@ const ACC = (() => {
       pending = {uid: me.id, course, data}; pushT = setTimeout(flushProgress, 1500);
     },
     admin: {
+      // every admin call gives up after a while instead of leaving the panel waiting forever (e.g. after the computer slept)
+      _slow(p, ms = 20000) { return Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error('השרת לא ענה בזמן. בדקו את החיבור ונסו שוב.')), ms))]); },
       async users() {
         const [p, g] = await Promise.all([sb.from('profiles').select('*').order('created_at', {ascending: false}), sb.from('progress').select('user_id,course,data,updated_at')]);
         if (p.error) throw new Error(he(p.error));
@@ -1716,6 +1718,7 @@ const ACC = (() => {
     }
   };
 
+  for (const k of ['users', 'recent', 'sessions', 'setBlock', 'sendEmail']) { const f = cloud.admin[k]; cloud.admin[k] = (...x) => cloud.admin._slow(f.apply(cloud.admin, x), k === 'sendEmail' ? 40000 : 20000); }
   const B = CLOUD.url && CLOUD.key ? cloud : local;
   return {
     mode: B === cloud ? 'cloud' : 'local',
@@ -5921,10 +5924,23 @@ async function vAdmin(m) {
   const simple = body => crumbs + `<header class="adhead"><h2>לוח הניהול</h2></header>` + body;
   if (!ACC.admin) { m.innerHTML = simple(`<section class="panel"><h4>צריך לחבר שרת</h4><p>כרגע החשבונות נשמרים רק במכשיר של כל משתמש, ולכן אין מקום אחד שבו רואים את כולם.</p></section>`); return; }
   if (!u || !u.isAdmin) { m.innerHTML = simple('<section class="panel"><p>הדף הזה פתוח רק למנהלים.</p></section>'); return; }
+  // only the newest load may draw; a refresh keeps the scroll position and the open learner, and a failed refresh keeps the page
+  const seq = vAdmin.seq = (vAdmin.seq || 0) + 1, had = !!m.querySelector('#ad_rows'), keepY = had ? window.scrollY : 0, reopen = had ? vAdmin.openUid : null;
   if (!m.querySelector('.adhead')) m.innerHTML = simple('<p class="note">טוען נתונים…</p>');
+  const rb = $('#ad_ref'); if (rb) { rb.disabled = true; rb.textContent = 'מרענן…'; }
   let rows, visits = [];
-  try { [rows, visits] = await Promise.all([ACC.admin.users(), ACC.admin.recent(30).catch(() => [])]); } catch (x) { m.innerHTML = simple(`<section class="panel"><p>${esc(x.message)}</p></section>`); return; }
-  if (view !== 'admin') return;
+  // the saved reminder texts load together with everything else, so nothing waits after the table is on screen
+  const M0 = vAdmin.msgs, needDoc = !M0 || !M0.doc || M0.bad;
+  const docP = needDoc ? Promise.race([ACC.pullProgress('_admin_msgs').then(d => (d && d.data) || {}), new Promise((_, no) => setTimeout(() => no(new Error('timeout')), 20000))]).catch(() => null) : null;
+  let doc = null;
+  try { [rows, visits, doc] = await Promise.all([ACC.admin.users(), ACC.admin.recent(30).catch(() => []), docP]); }
+  catch (x) {
+    if (seq !== vAdmin.seq || view !== 'admin') return;
+    if (had) { if (rb) { rb.disabled = false; rb.textContent = 'רענון'; } toast('הרענון נכשל: ' + x.message); return; }
+    m.innerHTML = simple(`<section class="panel"><p>${esc(x.message)}</p><button class="btn primary" id="ad_retry">נסו שוב</button></section>`); $('#ad_retry').onclick = () => vAdmin(m); return;
+  }
+  if (view !== 'admin' || seq !== vAdmin.seq) return;
+  vAdmin.at = Date.now(); if (vAdmin.onKey) document.removeEventListener('keydown', vAdmin.onKey);
   const day = 864e5, now = Date.now(), dkey = t => new Date(t).toISOString().slice(0, 10), today = dkey(now);
   const LIVE = 2.5 * 60000; // a heartbeat comes every 45 s while the page is open and visible
   const byUser = {}; visits.forEach(v => { (byUser[v.user_id] = byUser[v.user_id] || []).push(v); });
@@ -6025,7 +6041,7 @@ async function vAdmin(m) {
   draw();
   // ---- reminders: ready, personal emails to learners who drifted away, sent from the admin's own mailbox ----
   const MS = vAdmin.msgs = vAdmin.msgs || {tpl: 'miss', days: 7};
-  if (!MS.doc) { try { const d = await ACC.pullProgress('_admin_msgs'); MS.doc = (d && d.data) || {}; } catch (x) { MS.doc = {}; } }
+  if (needDoc) { MS.bad = !doc; MS.doc = doc || {}; } // not loaded: work with defaults, never overwrite the saved texts
   MS.doc.tpl = MS.doc.tpl || {}; MS.doc.sent = MS.doc.sent || {};
   const SITE = location.origin + location.pathname.replace(/[^/]*$/, ''); // the site's folder, e.g. …/silasacademy/
   const SIGN = '\n\nבהצלחה,\nצוות Silas Academy\n\n(אם לא תרצו לקבל תזכורות, פשוט תענו "הסר".)';
@@ -6074,7 +6090,7 @@ async function vAdmin(m) {
     try { await ACC.admin.sendEmail(r.id, d.su, d.html, d.text); markSent(r.id, key); toast(`נשלח ל${r.name} ✓`); return true; }
     catch (x) { toast(x.message === 'NO_SQL' ? 'כדי לשלוח מיילים מעוצבים צריך להריץ פעם אחת את update-today.sql ב־Supabase. בינתיים אפשר לשלוח דרך Gmail.' : 'השליחה נכשלה: ' + x.message); if (btn) { btn.disabled = false; btn.textContent = 'שליחה מעוצבת'; } return false; }
   };
-  const saveMsgs = () => ACC.saveDoc('_admin_msgs', MS.doc).catch(x => toast('השמירה נכשלה: ' + x.message));
+  const saveMsgs = () => MS.bad ? Promise.resolve(toast('ההודעות השמורות לא נטענו. לחצו על רענון ונסו שוב.')).then(() => false) : ACC.saveDoc('_admin_msgs', MS.doc).then(() => true, x => { toast('השמירה נכשלה: ' + x.message); return false; });
   const markSent = (uid, key) => { (MS.doc.sent[uid] = MS.doc.sent[uid] || []).push({t: new Date().toISOString(), k: key}); MS.doc.sent[uid] = MS.doc.sent[uid].slice(-20); saveMsgs(); };
   const lastSent = uid => { const l = MS.doc.sent[uid]; return l && l.length ? l[l.length - 1] : null; };
   const drawMsgs = () => {
@@ -6098,8 +6114,8 @@ async function vAdmin(m) {
     box.querySelectorAll('[data-tpl]').forEach(b => b.onclick = () => { MS.tpl = b.dataset.tpl; drawMsgs(); });
     const dsel = $('#ms_days'); if (dsel) dsel.onchange = e => { MS.days = +e.target.value; drawMsgs(); };
     box.querySelectorAll('[data-tok]').forEach(b => b.onclick = () => { const ta = $('#ms_body'), p0 = ta.selectionStart; ta.value = ta.value.slice(0, p0) + b.dataset.tok + ta.value.slice(ta.selectionEnd); ta.focus(); ta.selectionStart = ta.selectionEnd = p0 + b.dataset.tok.length; });
-    $('#ms_save').onclick = () => { MS.doc.tpl[MS.tpl] = {subject: $('#ms_su').value, body: $('#ms_body').value}; saveMsgs().then(() => { toast('ההודעה נשמרה.'); drawMsgs(); }); };
-    $('#ms_reset').onclick = () => { delete MS.doc.tpl[MS.tpl]; saveMsgs().then(() => { toast('חזרנו לנוסח המקורי.'); drawMsgs(); }); };
+    $('#ms_save').onclick = () => { MS.doc.tpl[MS.tpl] = {subject: $('#ms_su').value, body: $('#ms_body').value}; saveMsgs().then(ok => { if (ok) { toast('ההודעה נשמרה.'); drawMsgs(); } }); };
+    $('#ms_reset').onclick = () => { delete MS.doc.tpl[MS.tpl]; saveMsgs().then(ok => { if (ok) { toast('חזרנו לנוסח המקורי.'); drawMsgs(); } }); };
     box.querySelectorAll('[data-prev]').forEach(b => b.onclick = () => { const r = byId[b.dataset.prev], pv = $('#pv_' + r.id), d = designed(r, MS.tpl);
       if (pv.hidden) { pv.innerHTML = `<p class="note"><b>אל:</b> <bdi dir="ltr">${esc(r.email)}</bdi> · <b>נושא:</b> ${esc(d.su)}</p><iframe class="msframe" title="תצוגה של המייל" sandbox></iframe>`; pv.querySelector('iframe').srcdoc = d.html; }
       pv.hidden = !pv.hidden; b.textContent = pv.hidden ? 'תצוגה' : 'הסתרה'; });
@@ -6116,7 +6132,11 @@ async function vAdmin(m) {
   $('#ad_q').oninput = e => { state.q = e.target.value; draw(); };
   $('#ad_sort').onchange = e => { state.sort = e.target.value; draw(); };
   $('#ad_ref').onclick = () => vAdmin(m);
-  clearInterval(vAdmin.t); vAdmin.t = setInterval(() => { if (view !== 'admin' || document.hidden) return; if ($('#ad_one') && !$('#ad_one').hidden) return; if (document.activeElement && document.activeElement.id === 'ad_q') return; if (document.querySelector('.mstpl[open]') || document.querySelector('.msprev:not([hidden])')) return; vAdmin(m); }, 60000);
+  if (!vAdmin.hooked) { // remember the last touch, and catch up when coming back to the tab
+    vAdmin.hooked = true; ['pointerdown', 'keydown', 'wheel', 'touchstart'].forEach(ev => addEventListener(ev, () => { vAdmin.touch = Date.now(); }, {passive: true, capture: true}));
+    document.addEventListener('visibilitychange', () => { const b = $('#ad_one'); if (!document.hidden && view === 'admin' && Date.now() - (vAdmin.at || 0) > 60000 && b && b.hidden) vAdmin($('#main')); });
+  }
+  clearInterval(vAdmin.t); vAdmin.t = setInterval(() => { if (view !== 'admin' || document.hidden || Date.now() - (vAdmin.touch || 0) < 20000) return; if ($('#ad_one') && !$('#ad_one').hidden) return; if (document.activeElement && document.activeElement.id === 'ad_q') return; if (document.querySelector('.mstpl[open]') || document.querySelector('.msprev:not([hidden])')) return; vAdmin(m); }, 60000);
   $('#ad_csv').onclick = () => {
     const cell = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const csv = '﻿' + [['שם', 'אימייל', 'נרשם', 'כניסה אחרונה', 'פעילות אחרונה', 'מחובר עכשיו', 'מיקום', 'כניסות', 'דקות באתר', 'שאלות שנפתרו', 'מוכנות %', 'מבחנים', 'חסום'].map(cell).join(',')]
@@ -6125,17 +6145,25 @@ async function vAdmin(m) {
   };
   // learner details: a side panel on a computer, a full-screen sheet on a phone
   const box = $('#ad_one'), pane = box.querySelector('.adpanel');
-  let back = null;
-  const close = () => { box.hidden = true; document.body.classList.remove('adlock'); document.removeEventListener('keydown', onKey); if (back) back.focus(); };
-  const onKey = e => { if (e.key === 'Escape') close(); };
+  let back = null, openTok = 0;
+  const SS = vAdmin.ss = vAdmin.ss || {}; // each learner's visits once loaded, so the panel opens instantly next time
+  const close = () => { openTok++; vAdmin.openUid = null; box.hidden = true; document.body.classList.remove('adlock'); document.removeEventListener('keydown', onKey); if (back && back.isConnected) back.focus(); };
+  const onKey = vAdmin.onKey = e => { if (e.key === 'Escape') close(); };
   const open = async uid => {
     const r = byId[uid]; if (!r) return;
-    back = document.activeElement; box.hidden = false; document.body.classList.add('adlock'); document.addEventListener('keydown', onKey);
-    pane.innerHTML = `<div class="adph"><h3 id="ad_name">${esc(r.name)}</h3><button class="iconx" id="ad_close" aria-label="סגירה">✕</button></div><p class="note">טוען…</p>`;
-    $('#ad_close').onclick = close; pane.focus();
-    let ss = []; try { ss = await ACC.admin.sessions(r.id); } catch (x) {}
-    if (box.hidden) return;
-    const pv = ss.find(x => x.city) || r._placeVisit;
+    const tok = ++openTok; vAdmin.openUid = uid;
+    if (box.hidden) { back = document.activeElement; box.hidden = false; document.body.classList.add('adlock'); document.addEventListener('keydown', onKey); paint(r, SS[uid] || null); pane.focus(); }
+    else paint(r, SS[uid] || null);
+    try { const ss = await ACC.admin.sessions(r.id); SS[uid] = ss; if (tok === openTok && !box.hidden) paint(r, ss); }
+    catch (x) {
+      if (tok !== openTok || box.hidden || SS[uid]) return;
+      const v = $('#ad_visits'); if (v) { v.innerHTML = `<li class="note">${esc(x.message)} <button class="btn ghost sm" id="ad_vre">נסו שוב</button></li>`; $('#ad_vre').onclick = () => open(uid); }
+    }
+  };
+  const paint = (r, ss) => { // ss = null while the visits are still loading
+    const same = pane.dataset.uid === r.id, ta0 = same && $('#bl_msg'), msg0 = ta0 && box.contains(ta0) ? ta0.value : null, typing = ta0 && document.activeElement === ta0, top0 = same ? pane.scrollTop : 0;
+    pane.dataset.uid = r.id;
+    const pv = (ss || []).find(x => x.city) || r._placeVisit;
     pane.innerHTML = `<div class="adph"><div><h3 id="ad_name">${esc(r.name)} ${r.is_admin ? '<span class="chip">מנהל</span>' : ''}${r.blocked ? '<span class="chip blk">חסום</span>' : ''}</h3>
         <p class="note" dir="ltr">${esc(r.email)}</p></div><button class="iconx" id="ad_close" aria-label="סגירה">✕</button></div>
       <div class="adstat">${status(r)}${!r._live && r._last ? `<span class="note">${when(r._last)}</span>` : ''}<span class="note">נרשם ${when(r.created_at)}</span></div>
@@ -6148,18 +6176,21 @@ async function vAdmin(m) {
       ${r._corp ? `<div class="msbox"><span class="pl">⚖️ דיני תאגידים: <bdi>${r._corp.units} יחידות נלמדו</bdi> · <bdi>${r._corp.ok}/${r._corp.tried} שאלות נכון</bdi> · <bdi>${r._corp.cases} סעיפי מקרה</bdi> · <bdi>${r._corp.exams} מבחנים</bdi></span><span class="note">עודכן ${when(r._corp.at)}</span></div>` : ''}
       <div class="kpis sm"><div class="kpi"><b class="num">${r.logins || 0}</b><span>כניסות</span></div><div class="kpi"><b>${dur(r.total_seconds)}</b><span>זמן באתר</span></div><div class="kpi"><b class="num">${r._ans}</b><span>שאלות שנפתרו</span></div><div class="kpi"><b>${r._ready === null ? '—' : Math.round(r._ready * 100) + '%'}</b><span>מוכנות למבחן</span></div></div>
       <h4>כניסות אחרונות</h4>
-      <ul class="advisits">${ss.map((x, i) => { const live = i === 0 && r._live; const end = x.ended_at || x.last_ping || x.started_at; const span = Math.max(0, (Date.parse(end) - Date.parse(x.started_at)) / 1000);
+      <ul class="advisits" id="ad_visits">${ss === null ? '<li class="note">טוען כניסות…</li>' : ss.map((x, i) => { const live = i === 0 && r._live; const end = x.ended_at || x.last_ping || x.started_at; const span = Math.max(0, (Date.parse(end) - Date.parse(x.started_at)) / 1000);
         return `<li><div class="vt"><b>${when(x.started_at)}</b>${live ? '<span class="livechip">עדיין מחובר</span>' : `<span class="note">עד ${when(end).split(', ').pop()}</span>`}</div>
           <div class="note"><bdi>ביקור ${dur(span)}</bdi> · <bdi>למידה פעילה ${dur(x.seconds)}</bdi> · <bdi>${dev(x.device || '')}</bdi></div>
           ${x.city ? `<div class="vp"><a href="${mapUrl(x)}" target="_blank" rel="noopener">${esc(`${x.flag || ''} ${x.city}${x.country ? ', ' + x.country : ''}`)}</a>${waBtn(r, x, 'שיתוף המיקום של הביקור בוואצאפ')}</div>` : ''}</li>`; }).join('') || '<li class="note">אין עדיין כניסות.</li>'}</ul>
       ${r._exams.length ? `<h4>מבחנים</h4><ul class="advisits">${r._exams.slice().reverse().map(x => `<li><div class="vt"><b>${Math.round(x.score * 100)}%</b><span class="note">${when(x.ts)}</span></div><div class="note">${x.n} שאלות · ${Math.round((x.sec || 0) / 60)} דקות</div></li>`).join('')}</ul>` : ''}`;
     $('#ad_close').onclick = close;
-    pane.querySelectorAll('[data-send]').forEach(a => a.addEventListener('click', () => { markSent(r.id, a.dataset.k); setTimeout(() => { drawMsgs(); open(r.id); }, 400); }));
-    const am = $('#ad_mail'); if (am) am.onclick = async () => { if (await sendOne(r, am.dataset.k, am)) { drawMsgs(); open(r.id); } };
-    const setB = async (blocked, label) => {
-      const res = $('#bl_res'); res.textContent = 'שומר…';
-      try { await ACC.admin.setBlock(r.id, blocked, $('#bl_msg').value.trim()); r.blocked = blocked; r.block_message = $('#bl_msg').value.trim(); draw(); toast(label); open(r.id); }
-      catch (x) { res.textContent = x.message; }
+    const ta = $('#bl_msg'); if (ta && msg0 !== null) { ta.value = msg0; if (typing) ta.focus(); } pane.scrollTop = top0; // a repaint never loses what is being typed
+    const again = () => { if (vAdmin.openUid === r.id && !box.hidden) paint(r, SS[r.id] || null); };
+    pane.querySelectorAll('[data-send]').forEach(a => a.addEventListener('click', () => { markSent(r.id, a.dataset.k); setTimeout(() => { drawMsgs(); again(); }, 400); }));
+    const am = $('#ad_mail'); if (am) am.onclick = async () => { if (await sendOne(r, am.dataset.k, am)) { drawMsgs(); again(); } };
+    const setB = async (blocked, label) => { // buttons locked while saving: one click = one change
+      const res = $('#bl_res'), btns = pane.querySelectorAll('#bl_toggle, #bl_save'), msg = $('#bl_msg').value.trim();
+      btns.forEach(b => { b.disabled = true; }); res.textContent = 'שומר…';
+      try { await ACC.admin.setBlock(r.id, blocked, msg); r.blocked = blocked; r.block_message = msg; draw(); toast(label); if ($('#bl_msg')) $('#bl_msg').value = msg; again(); }
+      catch (x) { if (res.isConnected) { res.textContent = x.message; btns.forEach(b => { b.disabled = false; }); } else toast(x.message); }
     };
     const tg = $('#bl_toggle'); if (tg) tg.onclick = () => setB(!r.blocked, r.blocked ? 'הגישה הוחזרה.' : 'הגישה נחסמה.');
     const sv = $('#bl_save'); if (sv) sv.onclick = () => setB(true, 'ההודעה עודכנה.');
@@ -6168,6 +6199,9 @@ async function vAdmin(m) {
   const pick = e => { if (e.target.closest('a')) return null; const el = e.target.closest('[data-uid]'); return el && el.dataset.uid; };
   m.onclick = e => { if (view !== 'admin') return; const id = pick(e); if (id && !box.contains(e.target)) open(id); };
   m.onkeydown = e => { if (view !== 'admin' || e.key !== 'Enter') return; const id = pick(e); if (id && !box.contains(e.target)) open(id); };
+  document.body.classList.remove('adlock'); vAdmin.openUid = null;
+  if (keepY) window.scrollTo(0, keepY);
+  if (reopen && byId[reopen]) open(reopen);
 }
 
 // ---------- home ----------

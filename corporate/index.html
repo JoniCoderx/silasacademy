@@ -1176,7 +1176,7 @@ const ACC = (() => {
   document.addEventListener('visibilitychange', () => { if (document.hidden) flushProgress(); });
   const cloud = {
     async ready() {
-      await loadLib(); sb = window.supabase.createClient(CLOUD.url, CLOUD.key, {auth: {persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, flowType: 'implicit'}, global: {fetch: (u, o) => fetch(u, Object.assign({}, o, {keepalive: !(o && typeof o.body === 'string' && o.body.length > 60000)}))}});
+      await loadLib(); sb = window.supabase.createClient(CLOUD.url, CLOUD.key, {auth: {persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, flowType: 'implicit'}, global: {fetch: (u, o) => fetch(u, Object.assign({}, o, {keepalive: !!(o && o.method && !/^(GET|HEAD)$/i.test(o.method) && !(typeof o.body === 'string' && o.body.length > 60000))}))}});
       sb.auth.onAuthStateChange(ev => { if (ev === 'PASSWORD_RECOVERY') { recovering = true; if (cloud.onRecovery) cloud.onRecovery(); } });
       const {data} = await sb.auth.getSession();
       if (data.session && await needsCode()) { mfaPending = true; return; }
@@ -1251,6 +1251,8 @@ const ACC = (() => {
       pending = {uid: me.id, course, data}; pushT = setTimeout(flushProgress, 1500);
     },
     admin: {
+      // every admin call gives up after a while instead of leaving the panel waiting forever (e.g. after the computer slept)
+      _slow(p, ms = 20000) { return Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error('השרת לא ענה בזמן. בדקו את החיבור ונסו שוב.')), ms))]); },
       async users() {
         const [p, g] = await Promise.all([sb.from('profiles').select('*').order('created_at', {ascending: false}), sb.from('progress').select('user_id,course,data,updated_at')]);
         if (p.error) throw new Error(he(p.error));
@@ -1278,6 +1280,7 @@ const ACC = (() => {
     }
   };
 
+  for (const k of ['users', 'recent', 'sessions', 'setBlock', 'sendEmail']) { const f = cloud.admin[k]; cloud.admin[k] = (...x) => cloud.admin._slow(f.apply(cloud.admin, x), k === 'sendEmail' ? 40000 : 20000); }
   const B = CLOUD.url && CLOUD.key ? cloud : local;
   return {
     mode: B === cloud ? 'cloud' : 'local',
