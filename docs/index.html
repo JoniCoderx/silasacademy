@@ -932,6 +932,12 @@ input[dir=ltr]:placeholder-shown{direction:rtl;text-align:right}
 .cheatbox h4{margin-bottom:6px}.ll.cheat li{margin:6px 0;line-height:1.6}
 .reveal{font:inherit;font-size:.8rem;font-weight:700;border:1px dashed var(--accent);color:var(--accent);background:var(--accent-soft);border-radius:8px;padding:1px 10px;cursor:pointer}
 @media print{.top,.tabs,#wa,footer.site,.crumbs,header.page .row{display:none!important}.panel{break-inside:avoid;box-shadow:none;border:1px solid #ccc}}
+.tbar{position:sticky;top:calc(env(safe-area-inset-top,0px) + var(--hdr,0px));z-index:5;display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:var(--bg);padding:8px 0;margin-bottom:10px}
+.tbar select{font:inherit;padding:4px 8px;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--ink)}
+.talk .tline{margin:0;padding:10px 12px;border-radius:12px;cursor:pointer;line-height:1.7;transition:background .2s}
+.talk .tline b{display:inline-block;min-width:44px;margin-inline-end:6px}
+.talk .tline.noa b{color:#b4235a}.talk .tline.itai b{color:var(--accent)}
+.talk .tline.on{background:var(--hl);color:var(--hl-ink)}.talk .tline.on b{color:inherit}
 </style>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
   <linearGradient id="bm-bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2a3cc2"/><stop offset="1" stop-color="#121a66"/></linearGradient>
