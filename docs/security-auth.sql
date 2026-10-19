@@ -56,6 +56,12 @@ drop trigger if exists on_auth_user_confirmed_welcome on auth.users;
 create trigger on_auth_user_confirmed_welcome after insert or update of email_confirmed_at on auth.users
   for each row execute function public.on_user_confirmed_welcome();
 
+-- 5) A learner may change only their own NAME. Before this, a learner could rewrite other columns of their own
+--    profile row (email, login counts, time on site) and the admin panel would show the fake values.
+--    The site itself only ever updates the name; the server functions (heartbeat, set_block...) are not affected.
+revoke update on public.profiles from anon, authenticated;
+grant update (name) on public.profiles to authenticated;
+
 -- Check: should list exactly one admin (you), and the two triggers on auth.users.
 select email, is_admin from public.profiles where is_admin;
 select tgname from pg_trigger where tgrelid = 'auth.users'::regclass and not tgisinternal;

@@ -1143,12 +1143,12 @@ const ACC = (() => {
     if (!sid) try { const {data} = await sb.rpc('start_session', {p_device: navigator.userAgent}); sid = data; } catch (e) { sid = null; }
     if (sid && !resumed) locate(sid); else if (sid) { geoAt = 0; refreshPlace(sid); }
     lastBeat = Date.now();
-    const send = () => { if (!sid || document.hidden) { lastBeat = Date.now(); return; } const s = Math.round((Date.now() - lastBeat) / 1000); lastBeat = Date.now(); sb.rpc('heartbeat', {p_session: sid, p_seconds: s}).then(r => { if (r && r.data === true && me && !me.blocked) { await_block(); } }, () => {}); };
+    const send = force => { if (!sid || (document.hidden && !force)) { lastBeat = Date.now(); return; } const s = Math.round((Date.now() - lastBeat) / 1000); lastBeat = Date.now(); sb.rpc('heartbeat', {p_session: sid, p_seconds: s}).then(r => { if (!r || !me) return; if (r.data === true && !me.blocked) await_block(); else if (r.data === false && me.blocked) location.reload(); }, () => {}); };
     const await_block = async () => { await loadMe((await sb.auth.getUser()).data.user); if (me && me.blocked && cloud.onBlocked) cloud.onBlocked(); };
     beat = setInterval(() => { send(); refreshPlace(sid); }, 45000);
-    track.vis = () => { if (document.hidden) send(); else { lastBeat = Date.now(); refreshPlace(sid); } };
+    track.vis = () => { if (document.hidden) send(true); else { lastBeat = Date.now(); refreshPlace(sid); } };
     document.addEventListener('visibilitychange', track.vis);
-    track.hide = () => { send(); if (sid) { try { sessionStorage.setItem(SID_KEY, JSON.stringify({s: sid, u: me && me.id, t: Date.now()})); } catch (e) {} endVisit(sid); } };
+    track.hide = () => { send(true); if (sid) { try { sessionStorage.setItem(SID_KEY, JSON.stringify({s: sid, u: me && me.id, t: Date.now()})); } catch (e) {} endVisit(sid); } };
     track.show = e => { if (e.persisted && me) track(); }; // page restored from the back/forward cache: a new visit
     window.addEventListener('pagehide', track.hide);
     window.addEventListener('pageshow', track.show);
@@ -1162,19 +1162,21 @@ const ACC = (() => {
   }
   // admin: the "_visits" notes of every learner (or one), merged onto the session rows by id
   const visitNotes = async uid => {
-    let q = sb.from('progress').select('data').eq('course', VISITS); if (uid) q = q.eq('user_id', uid);
-    const out = {}; try { const {data} = await q; (data || []).forEach(r => Object.assign(out, (r.data && r.data.s) || {})); } catch (e) {}
+    let q = sb.from('progress').select('user_id,data').eq('course', VISITS); if (uid) q = q.eq('user_id', uid);
+    const out = {}; try { const {data} = await q; (data || []).forEach(r => { const s = (r.data && r.data.s) || {}; for (const k in s) if (s[k] && typeof s[k] === 'object') out[k] = Object.assign({}, s[k], {_u: r.user_id}); }); } catch (e) {}
     return out;
   };
   const withNotes = (rows, notes) => (rows || []).map(x => {
-    const n = notes[x.id]; if (!n) return x;
+    const n = notes[x.id]; if (!n || n._u !== x.user_id) return x; // a learner can only annotate their own visits
+    const num = v => (v === null || v === undefined || v === '' || !isFinite(+v)) ? null : +v;
     const y = Object.assign({}, x);
     if (!y.city && n.ci) Object.assign(y, {city: n.ci, country: n.c || '', flag: n.f || ''});
-    if (n.lat != null) Object.assign(y, {lat: n.lat, lng: n.lng, acc: n.acc});
+    if (num(n.lat) != null && num(n.lng) != null) Object.assign(y, {lat: num(n.lat), lng: num(n.lng), acc: num(n.acc)});
     if (n.at) y.geo_at = n.at;
     if (!y.ended_at && n.e) y.ended_at = n.e;
     return y;
   });
+  const allRows = async mk => { let out = []; for (let from = 0; ; from += 1000) { const {data, error} = await mk().range(from, from + 999); if (error) return {data: out.length ? out : null, error}; out = out.concat(data || []); if (!data || data.length < 1000) return {data: out, error: null}; } };
   let pending = null, mfaPending = false, capToken = '';
   const cap = () => capToken || undefined; // Cloudflare Turnstile token, when the bot check is switched on
   async function needsCode() { try { const {data} = await sb.auth.mfa.getAuthenticatorAssuranceLevel(); return !!data && data.nextLevel === 'aal2' && data.currentLevel !== 'aal2'; } catch (e) { return false; } }
@@ -1247,8 +1249,8 @@ const ACC = (() => {
       recovering = false;
     },
     recovering: () => recovering,
-    async rename(name) { if (!me || !name.trim()) return; me.name = name.trim(); await sb.from('profiles').update({name: me.name}).eq('id', me.id); },
-    async remove() { await cloud.logout(); },
+    async rename(name) { if (!me || !name.trim()) return; const {error} = await sb.from('profiles').update({name: name.trim()}).eq('id', me.id); if (error) throw new Error(he(error)); me.name = name.trim(); },
+    async remove() { const id = me && me.id; await cloud.logout(); if (id) Object.keys(localStorage).filter(k => k.startsWith(`silas:${id}:`)).forEach(k => localStorage.removeItem(k)); },
     async pullProgress(course) {
       if (!me) return null;
       const {data} = await sb.from('progress').select('data,updated_at').eq('user_id', me.id).eq('course', course).maybeSingle();
@@ -1266,16 +1268,16 @@ const ACC = (() => {
       // every admin call gives up after a while instead of leaving the panel waiting forever (e.g. after the computer slept)
       _slow(p, ms = 20000) { return Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error('השרת לא ענה בזמן. בדקו את החיבור ונסו שוב.')), ms))]); },
       async users() {
-        const [p, g] = await Promise.all([sb.from('profiles').select('*').order('created_at', {ascending: false}), sb.from('progress').select('user_id,course,data,updated_at')]);
-        if (p.error) throw new Error(he(p.error));
+        const [p, g] = await Promise.all([allRows(() => sb.from('profiles').select('*').order('created_at', {ascending: false})), allRows(() => sb.from('progress').select('user_id,course,data,updated_at').order('user_id').order('course'))]);
+        if (p.error) throw new Error(he(p.error)); if (g.error) throw new Error(he(g.error));
         const prog = {}; (g.data || []).forEach(r => { if (String(r.course).startsWith('_')) return; /* '_…' rows are notes, not course progress */ (prog[r.user_id] = prog[r.user_id] || {})[r.course] = r; });
         return p.data.map(u => { const c = prog[u.id] || {}; return {...u, progress: c['stats-finance'] || null, courses: c}; });
       },
       async recent(days = 30) { // every visit in the window, for the activity chart
         const since = new Date(Date.now() - days * 864e5).toISOString();
         const notes = visitNotes();
-        let {data, error} = await sb.from('sessions').select('id,user_id,started_at,last_ping,ended_at,seconds,city,country,flag').gte('started_at', since).order('started_at', {ascending: false}).limit(5000);
-        if (error) ({data, error} = await sb.from('sessions').select('id,user_id,started_at,last_ping,seconds').gte('started_at', since).order('started_at', {ascending: false}).limit(5000)); // before supabase-live.sql
+        let {data, error} = await allRows(() => sb.from('sessions').select('id,user_id,started_at,last_ping,ended_at,seconds,city,country,flag').gte('started_at', since).order('started_at', {ascending: false}));
+        if (error) ({data, error} = await allRows(() => sb.from('sessions').select('id,user_id,started_at,last_ping,seconds').gte('started_at', since).order('started_at', {ascending: false}))); // before supabase-live.sql
         if (error) throw new Error(he(error)); return withNotes(data, await notes);
       },
       async sendEmail(uid, subject, html, text) { // a designed email through the server (Brevo); the key never leaves Supabase
@@ -1547,7 +1549,7 @@ const triedCount = l => l.filter(q => S.mcq[q.id]).length;
 const unitMcq = id => MCQ.filter(q => q.unit === id);
 const unitAll = id => ALL.filter(q => q.unit === id);
 const readiness = () => ALL.length ? okCount(ALL) / ALL.length : 0;
-const daysLeft = () => S.examDate ? Math.ceil((new Date(S.examDate + 'T09:00') - new Date()) / 864e5) : null;
+const daysLeft = () => { if (!S.examDate) return null; const [y, mo, d] = S.examDate.split('-').map(Number), n = new Date(); return Math.round((Date.UTC(y, mo - 1, d) - Date.UTC(n.getFullYear(), n.getMonth(), n.getDate())) / 864e5); }; // 0 on exam day
 function toast(msg) { let t = $('.toast'); if (!t) { t = document.createElement('div'); t.className = 'toast'; t.setAttribute('role', 'status'); document.body.appendChild(t); } t.textContent = msg; t.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), 2600); }
 const crumbs = (...xs) => `<div class="crumbs">${xs.map((x, i) => i < xs.length - 1 ? `<a href="#${x[1]}" data-go="${x[1]}">${x[0]}</a><span aria-hidden="true">‹</span>` : `<span>${x[0]}</span>`).join('')}</div>`;
 
@@ -1555,9 +1557,10 @@ const crumbs = (...xs) => `<div class="crumbs">${xs.map((x, i) => i < xs.length 
 const VIEWS = [['dash', 'בית'], ['learn', 'לימוד'], ['listen', 'האזנה'], ['cheat', 'שליפים'], ['practice', 'תרגול'], ['exam', 'מבחנים']];
 const PARENT = {unit: 'learn', mistakes: 'practice'};
 let view = 'dash', arg = null;
-function parseHash() { const h = decodeURIComponent(location.hash.slice(1)); const [v, a] = h.split('/'); return {v: v || 'dash', a: a || null}; }
+function parseHash() { let h = ''; try { h = decodeURIComponent(location.hash.slice(1)); } catch (e) {} const [v, a] = h.split('/'); return {v: v || 'dash', a: a || null}; }
 function go(v, a, push = true) {
   if (v === 'listen' && !a) { stopTalk(); T.u = null; }
+  if ((v === 'practice' || v === 'mistakes') && v !== view && typeof P !== 'undefined') { P.q = null; P.done = false; }
   view = v; arg = a || null; const h = '#' + v + (a ? '/' + a : ''); if (push && location.hash !== h) history.pushState(null, '', h);
   nav(); render(); window.scrollTo(0, 0);
 }
@@ -1631,7 +1634,8 @@ function block(b) {
   }
 }
 function vUnit(m) {
-  const u = U[arg] || UNITS[0], i = UNITS.indexOf(u), l = unitAll(u.id);
+  if (!U[arg]) { view = 'learn'; arg = null; try { history.replaceState(null, '', '#learn'); } catch (e) {} nav(); return vLearn(m); } // unknown unit: the list, not unit 1
+  const u = U[arg], i = UNITS.indexOf(u), l = unitAll(u.id);
   m.innerHTML = crumbs(['לימוד', 'learn'], [`יחידה ${i + 1}`]) + `<article class="lesson">
     <header class="page"><span class="eyebrow">יחידה ${i + 1} מתוך ${UNITS.length}</span><h2>${esc(u.title)}</h2>${u.blurb ? `<p class="lead">${esc(u.blurb)}</p>` : ''}</header>
     <div class="row"><button class="btn primary" data-go="listen" data-arg="${u.id}">🎧 להאזין להסבר של היחידה</button></div>
@@ -1665,7 +1669,7 @@ function episode(u) { // a written conversation when there is one; otherwise the
   (u.cheat || []).length && L.push({s: F_HOST, x: 'ועכשיו השליפים בקצרה.'}, ...u.cheat.map(c => ({s: M_HOST, x: plain(c).replace(/=/g, ', זה ').replace(/·/g, ',')})));
   return {title: u.title, lines: L.filter(l => l.x), talk: false};
 }
-const T = {u: null, i: 0, on: false, rate: 1, voices: [], tok: 0};
+const T = {u: null, i: 0, on: false, rate: 1, voices: [], tok: 0, auto: true};
 function heVoices() { try { return speechSynthesis.getVoices().filter(v => /^(he|iw)/i.test(v.lang)); } catch (e) { return []; } }
 try { T.voices = heVoices(); speechSynthesis.onvoiceschanged = () => { T.voices = heVoices(); }; } catch (e) {}
 function stopTalk() { T.on = false; T.tok++; try { speechSynthesis.cancel(); } catch (e) {} if (A.el) A.el.pause(); }
@@ -1692,7 +1696,7 @@ function playRec() {
 }
 function sayLine() {
   const ep = episode(U[T.u]); if (!T.on) return;
-  if (T.i >= ep.lines.length) { const nx = UNITS[UNITS.indexOf(U[T.u]) + 1]; T.on = false; drawTalk(); if (nx && $('#t_auto') && $('#t_auto').checked) { T.u = nx.id; T.i = 0; T.on = true; history.replaceState(null, '', '#listen/' + nx.id); drawTalk(); sayLine(); } return; }
+  if (T.i >= ep.lines.length) { const nx = UNITS[UNITS.indexOf(U[T.u]) + 1]; T.on = false; drawTalk(); if (nx && T.auto) { T.u = nx.id; arg = nx.id; T.i = 0; T.on = true; history.replaceState(null, '', '#listen/' + nx.id); drawTalk(); sayLine(); } return; }
   if (rec(T.u)) return playRec();
   const l = ep.lines[T.i], tok = ++T.tok, u = new SpeechSynthesisUtterance(speakable(l.x));
   const v = T.voices, noa = l.s === F_HOST;
@@ -1719,10 +1723,11 @@ function drawTalk() {
     ${!T.voices.length && !rec(u.id) ? '<p class="note">לא מצאנו בדפדפן קול בעברית, ננסה בכל זאת. אם לא שומעים: בטלפון אנדרואיד – כרום; באייפון – ספארי; במחשב – אדג׳ או כרום.</p>' : ''}</header>
     <div class="tbar"><button class="btn primary" id="t_play">${T.on ? '⏸ השהיה' : '▶ האזנה'}</button><button class="btn ghost sm" id="t_prev" aria-label="משפט קודם">→</button><button class="btn ghost sm" id="t_next" aria-label="משפט הבא">←</button>
       <label class="note">מהירות <select id="t_rate">${[0.85, 1, 1.15, 1.3, 1.5].map(r => `<option value="${r}" ${T.rate === r ? 'selected' : ''}>${r}×</option>`).join('')}</select></label>
-      <label class="note"><input type="checkbox" id="t_auto" checked> להמשיך לפרק הבא</label></div>
+      <label class="note"><input type="checkbox" id="t_auto" ${T.auto ? 'checked' : ''}> להמשיך לפרק הבא</label></div>
     <section class="panel talk">${ep.lines.map((l, k) => `<p class="tline ${l.s === F_HOST ? 'noa' : 'itai'} ${k === T.i ? 'on' : ''}" data-k="${k}">${l.s === 'קריין' ? '' : `<b>${esc(l.s)}</b> `}${esc(plain(l.x))}</p>`).join('')}</section>
     <div class="row"><button class="btn" data-go="unit" data-arg="${u.id}">לשיעור הכתוב</button>${UNITS[i + 1] ? `<button class="btn ghost" data-go="listen" data-arg="${UNITS[i + 1].id}">לפרק הבא ‹</button>` : ''}</div>`;
-  $('#t_play').onclick = () => { if (T.on) { stopTalk(); markLine(); } else { T.on = true; sayLine(); } };
+  $('#t_play').onclick = () => { if (T.on) { stopTalk(); markLine(); } else { if (T.i >= ep.lines.length) T.i = 0; T.on = true; sayLine(); } };
+  $('#t_auto').onchange = e => { T.auto = e.target.checked; };
   $('#t_prev').onclick = () => { T.i = Math.max(0, T.i - 1); if (T.on) sayLine(); else markLine(); };
   $('#t_next').onclick = () => { T.i = Math.min(ep.lines.length - 1, T.i + 1); if (T.on) sayLine(); else markLine(); };
   $('#t_rate').onchange = e => { T.rate = +e.target.value; if (A.el) A.el.playbackRate = T.rate; if (T.on && !rec(T.u)) sayLine(); };
@@ -1737,7 +1742,7 @@ function vCheat(m) {
     <div class="row"><button class="btn ${C.quiz ? 'primary' : 'ghost'}" id="c_quiz">${C.quiz ? 'מצב שינון: פועל' : 'מצב שינון'}</button>${C.quiz ? '<button class="btn ghost" id="c_all">הצגת הכל</button>' : ''}<button class="btn ghost" onclick="print()">הדפסה</button></div></header>
     ${UNITS.map((u, i) => `<section class="panel cheatbox"><h4>${i + 1}. ${esc(u.title)}</h4>${u.mnemonic ? `<p class="note">💡 ${rich(u.mnemonic)}</p>` : ''}<ul class="ll cheat">${(u.cheat || []).map(line).join('')}</ul></section>`).join('')}`;
   $('#c_quiz').onclick = () => { C.quiz = !C.quiz; vCheat(m); };
-  const all = $('#c_all'); if (all) all.onclick = () => m.querySelectorAll('.ans').forEach(a => { a.hidden = false; a.previousElementSibling.remove(); });
+  const all = $('#c_all'); if (all) all.onclick = () => m.querySelectorAll('.reveal').forEach(b => { b.nextElementSibling.hidden = false; b.remove(); });
   m.querySelectorAll('.reveal').forEach(b => b.onclick = () => { b.nextElementSibling.hidden = false; b.remove(); });
 }
 
@@ -1821,8 +1826,19 @@ function spread(list, n) { // n random items, spread over the units so every uni
 function startExam(id) {
   const ex = CAR.exams.find(e => e.id === id) || {id: 'mock', title: 'מבחן אימון', mc: spread(BANK, 10), tf: spread(TFB, 10)};
   Object.assign(X, {id, ex, start: Date.now(), ans: {}, tf: {}, why: {}, self: {}, done: false}); clearInterval(X.t);
-  X.t = setInterval(() => { const el = $('#xclock'); if (el) el.textContent = clock(); if (left() <= 0 && !X.done) finish(); }, 1000); render(); window.scrollTo(0, 0);
+  keepX(); X.t = setInterval(tickX, 1000); render(); window.scrollTo(0, 0);
 }
+const tickX = () => { const el = $('#xclock'); if (el) el.textContent = clock(); if (left() <= 0 && !X.done) finish(); };
+const XK = () => ACC.key(CCOURSE) + ':exam', QID = Object.fromEntries((typeof ALL !== 'undefined' ? ALL : MCQ).map(q => [q.id, q]));
+function keepX() { try { if (X.id && !X.done) localStorage.setItem(XK(), JSON.stringify({id: X.id, title: X.ex.title, mc: X.ex.mc.map(q => q.id), tf: (X.ex.tf || []).map(q => q.id), start: X.start, ans: X.ans, tfa: X.tf, why: X.why})); else localStorage.removeItem(XK()); } catch (e) {} }
+function restoreX() { // an exam that was open when the page was refreshed or closed
+  let k = null; try { k = JSON.parse(localStorage.getItem(XK())); } catch (e) {}
+  if (!k || !k.id || !Array.isArray(k.mc)) return false;
+  const mc = k.mc.map(i => QID[i]), tf = (k.tf || []).map(i => QID[i]); if (mc.some(q => !q) || tf.some(q => !q)) { try { localStorage.removeItem(XK()); } catch (e) {} return false; }
+  Object.assign(X, {id: k.id, ex: {id: k.id, title: k.title, mc, tf}, start: +k.start || Date.now(), ans: k.ans || {}, done: false}); if ('tf' in X) Object.assign(X, {tf: k.tfa || {}, why: k.why || {}, self: {}});
+  clearInterval(X.t); X.t = setInterval(tickX, 1000); if (left() <= 0) finish(); return true;
+}
+window.addEventListener('beforeunload', e => { if (X.id && !X.done) { keepX(); e.preventDefault(); e.returnValue = ''; } });
 const left = () => Math.max(0, MIN * 60 - Math.floor((Date.now() - X.start) / 1000));
 function clock() { const l = left(); return `${Math.floor(l / 3600)}:${String(Math.floor(l % 3600 / 60)).padStart(2, '0')}:${String(l % 60).padStart(2, '0')}`; }
 const answered = () => Object.keys(X.ans).length + Object.keys(X.tf).length;
@@ -1836,9 +1852,9 @@ function drawExam(m) {
       <label class="field tfwhy">נימוק (עד שתי שורות)<textarea data-xw="${k}" rows="2" maxlength="300">${esc(X.why[k] || '')}</textarea></label></div>`).join('')}
     <div class="row"><button class="btn primary big" id="xend2">הגשת המבחן</button></div>`;
   const count = () => { const c = $('#xcount'); if (c) c.textContent = `${answered()}/${total} נענו`; };
-  m.querySelectorAll('[data-xm]').forEach(b => b.onclick = () => { const [k, i] = b.dataset.xm.split(':').map(Number); X.ans[k] = i; m.querySelectorAll(`[data-xm^="${k}:"]`).forEach(x => x.classList.toggle('sel', x === b)); count(); });
-  m.querySelectorAll('[data-tf]').forEach(b => b.onclick = () => { const [k, v] = b.dataset.tf.split(':'); const n = +k.slice(1); X.tf[n] = v === 'true'; m.querySelectorAll(`[data-tf^="${k}:"]`).forEach(x => x.classList.toggle('sel', x === b)); count(); });
-  m.querySelectorAll('[data-xw]').forEach(t => t.oninput = () => { X.why[t.dataset.xw] = t.value; });
+  m.querySelectorAll('[data-xm]').forEach(b => b.onclick = () => { const [k, i] = b.dataset.xm.split(':').map(Number); X.ans[k] = i; keepX(); m.querySelectorAll(`[data-xm^="${k}:"]`).forEach(x => x.classList.toggle('sel', x === b)); count(); });
+  m.querySelectorAll('[data-tf]').forEach(b => b.onclick = () => { const [k, v] = b.dataset.tf.split(':'); const n = +k.slice(1); X.tf[n] = v === 'true'; keepX(); m.querySelectorAll(`[data-tf^="${k}:"]`).forEach(x => x.classList.toggle('sel', x === b)); count(); });
+  m.querySelectorAll('[data-xw]').forEach(t => t.oninput = () => { X.why[t.dataset.xw] = t.value; clearTimeout(t.kt); t.kt = setTimeout(keepX, 400); });
   const end = () => { const miss = total - answered(); if (!confirm(miss ? `נשארו ${miss} שאלות בלי תשובה. להגיש בכל זאת?` : 'להגיש את המבחן?')) return; finish(); };
   $('#xend').onclick = end; $('#xend2').onclick = end;
 }
@@ -1847,12 +1863,14 @@ function points() {
   const ex = X.ex, a = ex.mc.filter((q, k) => X.ans[k] === q.a).length, b = ex.tf.filter((q, k) => X.tf[k] === q.a).length, w = ex.tf.filter((q, k) => X.tf[k] === q.a && X.self[k]).length;
   return {a, b, w, score: Math.round((a * 4 + b * 3 + w * 3) * 100 / (ex.mc.length * 4 + ex.tf.length * 6))};
 }
+// time ran out while the student was elsewhere on the site: the exam is handed in, and they are told so
+function doneMsg() { if (view === 'exam') { render(); window.scrollTo(0, 0); } else { nav(); toast('הזמן נגמר והמבחן הוגש. התוצאות מחכות בלשונית מבחנים.'); } }
 function finish() {
   X.done = true; clearInterval(X.t);
   const ex = X.ex, p = points();
   ex.mc.forEach((q, k) => { if (X.ans[k] != null) S.mcq[q.id] = {ok: X.ans[k] === q.a, n: ((S.mcq[q.id] || {}).n || 0) + 1}; });
   ex.tf.forEach((q, k) => { if (X.tf[k] != null) S.mcq[q.id] = {ok: X.tf[k] === q.a, n: ((S.mcq[q.id] || {}).n || 0) + 1}; });
-  S.exams.push({id: X.id, ts: Date.now(), score: p.score, right: p.a + p.b, sec: Math.round((Date.now() - X.start) / 1000)}); X.rec = S.exams.length - 1; save(); render(); window.scrollTo(0, 0);
+  S.exams.push({id: X.id, ts: Date.now(), score: p.score, right: p.a + p.b, sec: Math.round((Date.now() - X.start) / 1000)}); X.rec = S.exams.length - 1; save(); keepX(); doneMsg();
 }
 function drawResult(m) {
   const ex = X.ex, p = points();
@@ -1875,6 +1893,13 @@ function drawResult(m) {
   $('#xback').onclick = () => { X.id = null; X.done = false; go('exam'); };
 }
 
+// another tab or device may have moved on: take its newer progress when this tab comes back (not during an exam or while listening)
+async function resyncC() {
+  if (!ACC.user() || (X.id && !X.done) || resyncC.busy) return; resyncC.busy = true;
+  try { const b = S._at; await sync(); if (S._at !== b && view !== 'listen') { nav(); render(); } } finally { resyncC.busy = false; }
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) resyncC(); });
+window.addEventListener('storage', e => { if (ACC.user() && e.key === ACC.key(CCOURSE) && !(X.id && !X.done) && view !== 'listen') { loadS(); nav(); render(); } });
 // ---------- boot ----------
 $('#main').innerHTML = '<p class="note" style="text-align:center;padding:40px 0">טוען…</p>';
 (function () { const b = $('#cbar b'); if (b) b.textContent = 'אסטרטגיה עסקית'; const a = $('#cbar a'); if (a) { a.href = '/'; a.removeAttribute('data-go'); } const bl = $('.brandlink'); if (bl) { bl.href = '/'; bl.removeAttribute('data-go'); } })();
@@ -1884,6 +1909,7 @@ ACC.ready().catch(() => {}).then(async () => {
   ACC.onBlocked = () => location.replace('/');
   loadS(); await sync();
   const p = parseHash(); view = p.v; arg = p.a; if (!VIEWS.some(v => v[0] === view) && !PARENT[view]) view = 'dash';
+  if (restoreX() && !X.done) { view = 'exam'; arg = null; try { history.replaceState(null, '', '#exam'); } catch (e) {} }
   nav(); render();
 });
 </script>

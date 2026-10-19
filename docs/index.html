@@ -1582,12 +1582,12 @@ const ACC = (() => {
     if (!sid) try { const {data} = await sb.rpc('start_session', {p_device: navigator.userAgent}); sid = data; } catch (e) { sid = null; }
     if (sid && !resumed) locate(sid); else if (sid) { geoAt = 0; refreshPlace(sid); }
     lastBeat = Date.now();
-    const send = () => { if (!sid || document.hidden) { lastBeat = Date.now(); return; } const s = Math.round((Date.now() - lastBeat) / 1000); lastBeat = Date.now(); sb.rpc('heartbeat', {p_session: sid, p_seconds: s}).then(r => { if (r && r.data === true && me && !me.blocked) { await_block(); } }, () => {}); };
+    const send = force => { if (!sid || (document.hidden && !force)) { lastBeat = Date.now(); return; } const s = Math.round((Date.now() - lastBeat) / 1000); lastBeat = Date.now(); sb.rpc('heartbeat', {p_session: sid, p_seconds: s}).then(r => { if (!r || !me) return; if (r.data === true && !me.blocked) await_block(); else if (r.data === false && me.blocked) location.reload(); }, () => {}); };
     const await_block = async () => { await loadMe((await sb.auth.getUser()).data.user); if (me && me.blocked && cloud.onBlocked) cloud.onBlocked(); };
     beat = setInterval(() => { send(); refreshPlace(sid); }, 45000);
-    track.vis = () => { if (document.hidden) send(); else { lastBeat = Date.now(); refreshPlace(sid); } };
+    track.vis = () => { if (document.hidden) send(true); else { lastBeat = Date.now(); refreshPlace(sid); } };
     document.addEventListener('visibilitychange', track.vis);
-    track.hide = () => { send(); if (sid) { try { sessionStorage.setItem(SID_KEY, JSON.stringify({s: sid, u: me && me.id, t: Date.now()})); } catch (e) {} endVisit(sid); } };
+    track.hide = () => { send(true); if (sid) { try { sessionStorage.setItem(SID_KEY, JSON.stringify({s: sid, u: me && me.id, t: Date.now()})); } catch (e) {} endVisit(sid); } };
     track.show = e => { if (e.persisted && me) track(); }; // page restored from the back/forward cache: a new visit
     window.addEventListener('pagehide', track.hide);
     window.addEventListener('pageshow', track.show);
@@ -1601,19 +1601,21 @@ const ACC = (() => {
   }
   // admin: the "_visits" notes of every learner (or one), merged onto the session rows by id
   const visitNotes = async uid => {
-    let q = sb.from('progress').select('data').eq('course', VISITS); if (uid) q = q.eq('user_id', uid);
-    const out = {}; try { const {data} = await q; (data || []).forEach(r => Object.assign(out, (r.data && r.data.s) || {})); } catch (e) {}
+    let q = sb.from('progress').select('user_id,data').eq('course', VISITS); if (uid) q = q.eq('user_id', uid);
+    const out = {}; try { const {data} = await q; (data || []).forEach(r => { const s = (r.data && r.data.s) || {}; for (const k in s) if (s[k] && typeof s[k] === 'object') out[k] = Object.assign({}, s[k], {_u: r.user_id}); }); } catch (e) {}
     return out;
   };
   const withNotes = (rows, notes) => (rows || []).map(x => {
-    const n = notes[x.id]; if (!n) return x;
+    const n = notes[x.id]; if (!n || n._u !== x.user_id) return x; // a learner can only annotate their own visits
+    const num = v => (v === null || v === undefined || v === '' || !isFinite(+v)) ? null : +v;
     const y = Object.assign({}, x);
     if (!y.city && n.ci) Object.assign(y, {city: n.ci, country: n.c || '', flag: n.f || ''});
-    if (n.lat != null) Object.assign(y, {lat: n.lat, lng: n.lng, acc: n.acc});
+    if (num(n.lat) != null && num(n.lng) != null) Object.assign(y, {lat: num(n.lat), lng: num(n.lng), acc: num(n.acc)});
     if (n.at) y.geo_at = n.at;
     if (!y.ended_at && n.e) y.ended_at = n.e;
     return y;
   });
+  const allRows = async mk => { let out = []; for (let from = 0; ; from += 1000) { const {data, error} = await mk().range(from, from + 999); if (error) return {data: out.length ? out : null, error}; out = out.concat(data || []); if (!data || data.length < 1000) return {data: out, error: null}; } };
   let pending = null, mfaPending = false, capToken = '';
   const cap = () => capToken || undefined; // Cloudflare Turnstile token, when the bot check is switched on
   async function needsCode() { try { const {data} = await sb.auth.mfa.getAuthenticatorAssuranceLevel(); return !!data && data.nextLevel === 'aal2' && data.currentLevel !== 'aal2'; } catch (e) { return false; } }
@@ -1686,8 +1688,8 @@ const ACC = (() => {
       recovering = false;
     },
     recovering: () => recovering,
-    async rename(name) { if (!me || !name.trim()) return; me.name = name.trim(); await sb.from('profiles').update({name: me.name}).eq('id', me.id); },
-    async remove() { await cloud.logout(); },
+    async rename(name) { if (!me || !name.trim()) return; const {error} = await sb.from('profiles').update({name: name.trim()}).eq('id', me.id); if (error) throw new Error(he(error)); me.name = name.trim(); },
+    async remove() { const id = me && me.id; await cloud.logout(); if (id) Object.keys(localStorage).filter(k => k.startsWith(`silas:${id}:`)).forEach(k => localStorage.removeItem(k)); },
     async pullProgress(course) {
       if (!me) return null;
       const {data} = await sb.from('progress').select('data,updated_at').eq('user_id', me.id).eq('course', course).maybeSingle();
@@ -1705,16 +1707,16 @@ const ACC = (() => {
       // every admin call gives up after a while instead of leaving the panel waiting forever (e.g. after the computer slept)
       _slow(p, ms = 20000) { return Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error('השרת לא ענה בזמן. בדקו את החיבור ונסו שוב.')), ms))]); },
       async users() {
-        const [p, g] = await Promise.all([sb.from('profiles').select('*').order('created_at', {ascending: false}), sb.from('progress').select('user_id,course,data,updated_at')]);
-        if (p.error) throw new Error(he(p.error));
+        const [p, g] = await Promise.all([allRows(() => sb.from('profiles').select('*').order('created_at', {ascending: false})), allRows(() => sb.from('progress').select('user_id,course,data,updated_at').order('user_id').order('course'))]);
+        if (p.error) throw new Error(he(p.error)); if (g.error) throw new Error(he(g.error));
         const prog = {}; (g.data || []).forEach(r => { if (String(r.course).startsWith('_')) return; /* '_…' rows are notes, not course progress */ (prog[r.user_id] = prog[r.user_id] || {})[r.course] = r; });
         return p.data.map(u => { const c = prog[u.id] || {}; return {...u, progress: c['stats-finance'] || null, courses: c}; });
       },
       async recent(days = 30) { // every visit in the window, for the activity chart
         const since = new Date(Date.now() - days * 864e5).toISOString();
         const notes = visitNotes();
-        let {data, error} = await sb.from('sessions').select('id,user_id,started_at,last_ping,ended_at,seconds,city,country,flag').gte('started_at', since).order('started_at', {ascending: false}).limit(5000);
-        if (error) ({data, error} = await sb.from('sessions').select('id,user_id,started_at,last_ping,seconds').gte('started_at', since).order('started_at', {ascending: false}).limit(5000)); // before supabase-live.sql
+        let {data, error} = await allRows(() => sb.from('sessions').select('id,user_id,started_at,last_ping,ended_at,seconds,city,country,flag').gte('started_at', since).order('started_at', {ascending: false}));
+        if (error) ({data, error} = await allRows(() => sb.from('sessions').select('id,user_id,started_at,last_ping,seconds').gte('started_at', since).order('started_at', {ascending: false}))); // before supabase-live.sql
         if (error) throw new Error(he(error)); return withNotes(data, await notes);
       },
       async sendEmail(uid, subject, html, text) { // a designed email through the server (Brevo); the key never leaves Supabase
@@ -5403,7 +5405,8 @@ VIDEO_OF.f8 = VIDEO_OF.f8 || VIDEOS.find(v => v.id === 'v4');
 document.documentElement.setAttribute('dir', 'rtl'); document.documentElement.setAttribute('lang', 'he');
 // ---------- state ----------
 const COURSE = 'stats-finance';
-const iso = d => d.toISOString().slice(0, 10);
+const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; // local date, not UTC
+const dayNo = s => { const [y, m, d] = String(s).split('-').map(Number); return Date.UTC(y, m - 1, d) / 864e5; };
 const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
 const todayISO = () => iso(new Date());
 // S = the signed-in learner's progress in this course (one record per account per course)
@@ -5412,12 +5415,34 @@ let S = blankS();
 function loadCourse() {
   S = blankS(); const u = ACC.user(); if (!u) return;
   try { const s = JSON.parse(localStorage.getItem(ACC.key(COURSE))); if (s) S = Object.assign(S, s); } catch (e) {}
-  S.book = S.book || {}; S.name = u.name;
+  S.book = S.book || {}; S.name = u.name; if (Array.isArray(S.mistakes) && S.mistakes.length > 60) S.mistakes = S.mistakes.slice(-60);
 }
 function save() {
   if (!ACC.user()) return; S._at = Date.now();
   try { localStorage.setItem(ACC.key(COURSE), JSON.stringify(S)); } catch (e) {}
   ACC.pushProgress(COURSE, S);
+}
+// another tab or device may have moved on: pick up its newer progress when this tab comes back (never in the middle of an exam)
+async function resync() {
+  if (!ACC.user() || (X && X.running) || resync.busy) return; resync.busy = true;
+  try { const before = S._at; await syncCourse(); if (S._at !== before && !(X && X.running)) { nav(); render(); } } finally { resync.busy = false; }
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) resync(); });
+window.addEventListener('focus', () => { if (Date.now() - (resync.at || 0) > 20000) { resync.at = Date.now(); resync(); } });
+window.addEventListener('storage', e => { if (!ACC.user() || e.key !== ACC.key(COURSE) || (X && X.running)) return; loadCourse(); nav(); render(); });
+// a backup file is outside data: keep only known fields, as plain numbers/strings, and rebuild mistakes from the question bank
+function cleanImport(d) {
+  const o = {}, num = v => isFinite(+v) ? +v : 0, obj = v => v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+  const day = v => typeof v === 'string' && /^\d{4}-\d\d-\d\d$/.test(v);
+  if (day(d.examDate)) o.examDate = d.examDate; o.started = !!d.started; o.answered = num(d.answered); if (d.real25 != null) o.real25 = num(d.real25);
+  o.hist = {}; for (const [k, v] of Object.entries(obj(d.hist))) if (T[k] && Array.isArray(v)) o.hist[k] = v.slice(-200).map(x => x ? 1 : 0);
+  for (const f of ['seen', 'lessons', 'plan']) { o[f] = {}; for (const [k, v] of Object.entries(obj(d[f]))) if (/^[\w-]{1,40}$/.test(k)) o[f][k] = typeof v === 'number' ? v : !!v; }
+  o.days = (Array.isArray(d.days) ? d.days : []).filter(day).slice(-400);
+  o.exams = (Array.isArray(d.exams) ? d.exams : []).slice(-100).map(x => ({ts: num(x && x.ts), n: num(x && x.n), score: num(x && x.score), sec: num(x && x.sec)}));
+  const byId = Object.fromEntries((typeof QB !== 'undefined' ? QB : []).concat(typeof EXAM_2025 !== 'undefined' ? EXAM_2025 : []).filter(q => q.id).map(q => [q.id, q]));
+  o.mistakes = (Array.isArray(d.mistakes) ? d.mistakes : []).map(m => m && byId[m.id]).filter(Boolean).slice(-60).map(q => ({id: q.id, t: q.t, q: q.q, o: q.o, a: q.a, e: q.e, w: q.w, fixed: true, ts: Date.now()}));
+  o.book = {}; for (const [k, v] of Object.entries(obj(d.book))) if (/^\d{1,3}$/.test(k)) o.book[k] = {solved: String(num(v && v.solved) || ''), correct: String(num(v && v.correct) || ''), wrong: String((v && v.wrong) || '').replace(/[^\d, ]/g, '').slice(0, 200)};
+  return o;
 }
 // cloud mode: take the newer of the device copy and the cloud copy
 async function syncCourse() {
@@ -5510,11 +5535,12 @@ function streak() {
   while (S.days.includes(iso(d))) { n++; d = addDays(d, -1); }
   return n;
 }
-function daysLeft() { return Math.ceil((new Date(S.examDate + 'T09:00') - new Date()) / 864e5); }
+function daysLeft() { return dayNo(S.examDate) - dayNo(todayISO()); } // 0 on exam day, 1 the day before
 function addMistake(q, chosen) {
   const key = q.id || q.q;
   S.mistakes = S.mistakes.filter(m => (m.id || m.q) !== key);
   S.mistakes.push({id: q.id, t: q.t, q: q.q, o: q.o, a: q.a, e: q.e, w: q.w, fixed: true, chosen, ts: Date.now()});
+  if (S.mistakes.length > 60) S.mistakes = S.mistakes.slice(-60); // the newest 60 are plenty, and the record stays small
 }
 function dropMistake(q) { const key = q.id || q.q; S.mistakes = S.mistakes.filter(m => (m.id || m.q) !== key); }
 
@@ -5569,6 +5595,7 @@ const PARENT = {videos: 'learn', mistakes: 'practice', tools: 'formulas', plan: 
 const ROUTES = ['home', 'login', 'reset', 'account', 'admin', 'dash', 'learn', 'practice', 'exam', 'formulas', 'videos', 'mistakes', 'tools'];
 const ACADEMY_VIEWS = ['home', 'login', 'reset', 'account', 'admin'];
 let view = 'home', P = null, X = null, timerId = null;
+function stopAll() { clearInterval(timerId); X = null; P = null; try { localStorage.removeItem(xKey()); } catch (e) {} if (typeof stopVideo === 'function') stopVideo(); } // sign-out, delete, block: nothing carries over to the next account
 let bootTopic = null;
 try { const h = location.hash.slice(1), mm = h.match(/^learn-(\w+)$/); if (ROUTES.includes(h)) view = h; else if (mm && T[mm[1]]) { view = 'learn'; bootTopic = mm[1]; } } catch (e) {}
 // sign-in vs. the saved page is decided at boot (below), once the account backend has answered
@@ -5742,7 +5769,7 @@ function vLogin(m) {
   };
   capMount($('#authf'));
 }
-async function afterSignIn() { if (returnTo()) return; loadCourse(); await syncCourse(); vLogin.mode = null; go('home'); }
+async function afterSignIn() { if (returnTo()) return; loadCourse(); await syncCourse(); vLogin.mode = null; go(restoreX() ? 'exam' : 'home'); }
 // second step for accounts with 2-step login (the admin): the 6-digit code from the authenticator app
 function vMfa(m) {
   m.innerHTML = `<div class="authwrap single"><section class="auth">
@@ -5756,7 +5783,7 @@ function vMfa(m) {
     </form>
     <p class="auth-switch"><a href="#" id="mf_out">כניסה עם חשבון אחר</a></p></section></div>`;
   $('#mf_code').focus();
-  $('#mf_out').onclick = async e => { e.preventDefault(); await ACC.logout(); vLogin.mode = 'login'; vLogin(m); };
+  $('#mf_out').onclick = async e => { e.preventDefault(); stopAll(); await ACC.logout(); vLogin.mode = 'login'; vLogin(m); };
   $('#mff').onsubmit = async e => {
     e.preventDefault(); const err = $('#mf_err'), btn = $('#mff button'); err.textContent = ''; btn.disabled = true;
     try { await ACC.mfaVerify($('#mf_code').value); await afterSignIn(); } catch (x) { err.textContent = x.message; btn.disabled = false; $('#mf_code').select(); }
@@ -5840,7 +5867,7 @@ function vBlocked(m, u) {
     <button class="btn" id="bl_out">יציאה מהחשבון</button>
   </section></div>`;
   const cp = $('#bl_copy'); if (cp) cp.onclick = () => { try { navigator.clipboard.writeText(contact).then(() => toast('הכתובת הועתקה.'), () => {}); } catch (e) {} };
-  $('#bl_out').onclick = async () => { await ACC.logout(); S = blankS(); vLogin.mode = 'login'; go('login'); };
+  $('#bl_out').onclick = async () => { stopAll(); await ACC.logout(); S = blankS(); vLogin.mode = 'login'; go('login'); };
 }
 function toast(msg) {
   const t = document.createElement('div'); t.className = 'toast'; t.setAttribute('role', 'status'); t.textContent = msg; document.body.appendChild(t);
@@ -5866,11 +5893,11 @@ function vAccount(m) {
   };
   $('#ac_imp').onchange = e => {
     const f = e.target.files[0]; if (!f) return; const rd = new FileReader();
-    rd.onload = () => { try { const j = JSON.parse(rd.result); if (!j || j.course !== COURSE || !j.data) throw 0; S = Object.assign(blankS(), j.data, {name: u.name}); save(); $('#ac_msg').textContent = 'ההתקדמות נטענה.'; } catch (x) { $('#ac_msg').textContent = 'הקובץ לא נראה כמו קובץ גיבוי של האקדמיה.'; } };
+    rd.onload = () => { try { const j = JSON.parse(rd.result); if (!j || j.course !== COURSE || !j.data) throw 0; S = Object.assign(blankS(), cleanImport(j.data), {name: u.name}); save(); $('#ac_msg').textContent = 'ההתקדמות נטענה.'; } catch (x) { $('#ac_msg').textContent = 'הקובץ לא נראה כמו קובץ גיבוי של האקדמיה.'; } };
     rd.readAsText(f);
   };
-  $('#ac_out').onclick = async () => { await ACC.logout(); S = blankS(); vLogin.mode = 'login'; go('login'); };
-  $('#ac_del').onclick = () => { if (confirm('למחוק את החשבון ואת כל ההתקדמות שלו מהמכשיר הזה? אי אפשר לבטל.')) { ACC.remove(); S = blankS(); go('login'); } };
+  $('#ac_out').onclick = async () => { stopAll(); await ACC.logout(); S = blankS(); vLogin.mode = 'login'; go('login'); };
+  $('#ac_del').onclick = async () => { if (confirm(ACC.mode === 'cloud' ? 'להתנתק ולמחוק את ההתקדמות מהמכשיר הזה? ההתקדמות בחשבון נשמרת. למחיקה מלאה של החשבון כתבו ל־support@silasacademy.com.' : 'למחוק את החשבון ואת כל ההתקדמות שלו מהמכשיר הזה? אי אפשר לבטל.')) { stopAll(); await ACC.remove(); S = blankS(); go('login'); } };
 }
 
 // the admin's 2-step login: link an authenticator app once, then every sign-in also asks for its 6-digit code
@@ -5958,14 +5985,15 @@ async function vAdmin(m) {
   }
   if (view !== 'admin' || seq !== vAdmin.seq) return;
   vAdmin.at = Date.now(); if (vAdmin.onKey) document.removeEventListener('keydown', vAdmin.onKey);
-  const day = 864e5, now = Date.now(), dkey = t => new Date(t).toISOString().slice(0, 10), today = dkey(now);
+  const day = 864e5, now = Date.now(), dkey = t => iso(new Date(t)), today = dkey(now); // local days
   const LIVE = 2.5 * 60000; // a heartbeat comes every 45 s while the page is open and visible
   const byUser = {}; visits.forEach(v => { (byUser[v.user_id] = byUser[v.user_id] || []).push(v); });
   Object.values(byUser).forEach(l => l.sort((a, b) => Date.parse(b.started_at) - Date.parse(a.started_at)));
   const byId = {};
   rows.forEach(r => {
     byId[r.id] = r;
-    const d = r.progress && r.progress.data; r._ans = (d && d.answered) || 0; r._ready = readinessOf(d); r._exams = (d && d.exams) || [];
+    const d = r.progress && r.progress.data; r._ans = +(d && d.answered) || 0; r._ready = readinessOf(d); r._exams = (Array.isArray(d && d.exams) ? d.exams : []).map(x => ({ts: +(x && x.ts) || 0, n: +(x && x.n) || 0, score: +(x && x.score) || 0, sec: +(x && x.sec) || 0})); if (!isFinite(r._ready)) r._ready = null;
+    r._any = r._ans + Object.entries(r.courses || {}).reduce((a, [k, c]) => a + (k === 'stats-finance' ? 0 : Object.keys((c && c.data && c.data.mcq) || {}).length), 0); // answers in every course
     const cd = r.courses && r.courses['corp-law'] && r.courses['corp-law'].data; // the corporate-law course keeps its own progress row
     r._corp = cd ? {ok: Object.values(cd.mcq || {}).filter(x => x.ok).length, tried: Object.keys(cd.mcq || {}).length, units: Object.keys(cd.lessons || {}).length, cases: Object.keys(cd.cases || {}).length, exams: (cd.exams || []).length, at: r.courses['corp-law'].updated_at} : null;
     const vs = byUser[r.id] || [], lv = vs[0]; r._visit = lv; r._placeVisit = vs.find(v => v.city) || null;
@@ -5975,7 +6003,7 @@ async function vAdmin(m) {
   });
   // location → map link and a ready WhatsApp message (pick the contact in WhatsApp)
   const placeQ = v => [...String(v.city || '').split(' · ').reverse(), v.country].filter(Boolean).join(', ');
-  const mapUrl = v => !v ? '' : v.lat != null ? `https://www.google.com/maps?q=${v.lat},${v.lng}` : v.city ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(placeQ(v))}` : '';
+  const mapUrl = v => !v ? '' : v.lat != null && isFinite(+v.lat) && isFinite(+v.lng) ? `https://www.google.com/maps?q=${+v.lat},${+v.lng}` : v.city ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(placeQ(v))}` : '';
   // the message says when the learner was last seen and when the place itself was last updated, not when the visit began
   const seenAt = v => v.ended_at || v.last_ping || v.started_at;
   const waPlace = (r, v) => 'https://wa.me/?text=' + encodeURIComponent([`📍 ${r.name}: ${`${v.flag || ''} ${placeQ(v)}`.trim()}`,
@@ -6073,7 +6101,7 @@ async function vAdmin(m) {
   };
   const tplOf = key => Object.assign({}, TPL[key], MS.doc.tpl[key] || {});
   const daysSince = t => t ? Math.floor((now - Date.parse(t)) / day) : null;
-  const examDays = r => { const e = r.progress && r.progress.data && r.progress.data.examDate; return e ? Math.ceil((new Date(e + 'T09:00') - now) / day) : null; };
+  const examDays = r => { const e = r.progress && r.progress.data && r.progress.data.examDate; return e && /^\d{4}-\d\d-\d\d$/.test(e) ? dayNo(e) - dayNo(todayISO()) : null; };
   const fill = (text, r) => text
     .replace(/\{שם\}/g, (r.name || '').split(' ')[0] || 'שלום')
     .replace(/\{ימים\}/g, daysSince(r._last || r.created_at) ?? '')
@@ -6084,7 +6112,7 @@ async function vAdmin(m) {
     .replace(/\{קישור\}/g, SITE);
   const pickers = {
     miss: r => r._last ? daysSince(r._last) >= MS.days : daysSince(r.created_at) >= MS.days,
-    start: r => !r._ans && daysSince(r.created_at) >= 1,
+    start: r => !r._any && daysSince(r.created_at) >= 1, // no answers in any course
     exam: r => { const d = examDays(r); return d !== null && d >= 0 && d <= 30; },
     custom: () => true
   };
@@ -6155,7 +6183,7 @@ async function vAdmin(m) {
   }
   clearInterval(vAdmin.t); vAdmin.t = setInterval(() => { if (view !== 'admin' || document.hidden || Date.now() - (vAdmin.touch || 0) < 20000) return; if ($('#ad_one') && !$('#ad_one').hidden) return; if (document.activeElement && document.activeElement.id === 'ad_q') return; if (document.querySelector('.mstpl[open]') || document.querySelector('.msprev:not([hidden])')) return; vAdmin(m); }, 60000);
   $('#ad_csv').onclick = () => {
-    const cell = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const cell = v => `"${String(v ?? '').replace(/^([=+\-@\t\r])/, "'$1").replace(/"/g, '""')}"`; // no spreadsheet formulas from learner names
     const csv = '﻿' + [['שם', 'אימייל', 'נרשם', 'כניסה אחרונה', 'פעילות אחרונה', 'מחובר עכשיו', 'מיקום', 'כניסות', 'דקות באתר', 'שאלות שנפתרו', 'מוכנות %', 'מבחנים', 'חסום'].map(cell).join(',')]
       .concat(rows.map(r => [r.name, r.email, r.created_at, r.last_login, r._last, r._live ? 'כן' : 'לא', r._placeVisit ? placeQ(r._placeVisit) : '', r.logins, Math.round((r.total_seconds || 0) / 60), r._ans, r._ready === null ? '' : Math.round(r._ready * 100), r._exams.length, r.blocked ? 'כן' : ''].map(cell).join(','))).join('\n');
     const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], {type: 'text/csv'})); a.download = `silas-users-${todayISO()}.csv`; document.body.appendChild(a); a.click(); a.remove();
@@ -6188,8 +6216,8 @@ async function vAdmin(m) {
         <p class="note">${r.blocked ? 'הגישה של המשתמש חסומה. הוא רואה את ההודעה שלמטה במקום התוכן.' : 'המשתמש פעיל. אם תחסמו אותו, הוא יראה את ההודעה שלמטה במקום התוכן, תוך דקה גם אם הוא באמצע.'}</p>
         <label class="field">ההודעה שהמשתמש יראה<textarea id="bl_msg" rows="2" maxlength="500" placeholder="הגישה לחשבון שלכם הושהתה זמנית. כדי לחדש אותה, צרו קשר עם צוות האקדמיה.">${esc(r.block_message || '')}</textarea></label>
         <div class="row"><button class="btn ${r.blocked ? 'primary' : 'danger'}" id="bl_toggle">${r.blocked ? 'החזרת הגישה' : 'חסימת הגישה'}</button>${r.blocked ? '<button class="btn ghost sm" id="bl_save">עדכון ההודעה</button>' : ''}<span class="note" id="bl_res"></span></div></div>`}
-      ${pv ? `<div class="placebox"><span class="pl">📍 ${esc(`${pv.flag || ''} ${placeQ(pv)}`)}${pv.lat != null ? `<span class="note acc"> · מיקום מדויק מהמכשיר${pv.acc ? ` (±${pv.acc} מ׳)` : ''}</span>` : '<span class="note acc"> · משוער לפי האינטרנט</span>'}${pv.geo_at ? `<span class="note acc"> · עודכן ${ago(pv.geo_at)}</span>` : ''}</span><div class="row"><a class="btn sm wabtn" href="${waPlace(r, pv)}" target="_blank" rel="noopener">${WAI}שיתוף בוואצאפ</a><a class="btn ghost sm" href="${mapUrl(pv)}" target="_blank" rel="noopener">פתיחה במפה</a></div></div>` : ''}
-      ${!r.is_admin && r.email ? (() => { const k = r._ans ? 'miss' : 'start', l = mailLinks(r, k), ls = lastSent(r.id); return `<div class="msbox"><span class="pl">✉️ תזכורת: ${TPL[k].label}${ls ? ` <span class="sentchip">✓ נשלח ${ago(ls.t)}</span>` : ''}</span><div class="row"><button class="btn sm primary" id="ad_mail" data-k="${k}">שליחה מעוצבת</button><a class="btn sm ghost" data-send="${r.id}" data-k="${k}" href="${l.gmail}" target="_blank" rel="noopener">Gmail</a></div></div>`; })() : ''}
+      ${pv ? `<div class="placebox"><span class="pl">📍 ${esc(`${pv.flag || ''} ${placeQ(pv)}`)}${pv.lat != null ? `<span class="note acc"> · מיקום מדויק מהמכשיר${pv.acc ? ` (±${Math.round(+pv.acc) || 0} מ׳)` : ''}</span>` : '<span class="note acc"> · משוער לפי האינטרנט</span>'}${pv.geo_at ? `<span class="note acc"> · עודכן ${ago(pv.geo_at)}</span>` : ''}</span><div class="row"><a class="btn sm wabtn" href="${waPlace(r, pv)}" target="_blank" rel="noopener">${WAI}שיתוף בוואצאפ</a><a class="btn ghost sm" href="${mapUrl(pv)}" target="_blank" rel="noopener">פתיחה במפה</a></div></div>` : ''}
+      ${!r.is_admin && r.email ? (() => { const k = r._any ? 'miss' : 'start', l = mailLinks(r, k), ls = lastSent(r.id); return `<div class="msbox"><span class="pl">✉️ תזכורת: ${TPL[k].label}${ls ? ` <span class="sentchip">✓ נשלח ${ago(ls.t)}</span>` : ''}</span><div class="row"><button class="btn sm primary" id="ad_mail" data-k="${k}">שליחה מעוצבת</button><a class="btn sm ghost" data-send="${r.id}" data-k="${k}" href="${l.gmail}" target="_blank" rel="noopener">Gmail</a></div></div>`; })() : ''}
       ${r._corp ? `<div class="msbox"><span class="pl">⚖️ דיני תאגידים: <bdi>${r._corp.units} יחידות נלמדו</bdi> · <bdi>${r._corp.ok}/${r._corp.tried} שאלות נכון</bdi> · <bdi>${r._corp.cases} סעיפי מקרה</bdi> · <bdi>${r._corp.exams} מבחנים</bdi></span><span class="note">עודכן ${when(r._corp.at)}</span></div>` : ''}
       <div class="kpis sm"><div class="kpi"><b class="num">${r.logins || 0}</b><span>כניסות</span></div><div class="kpi"><b>${dur(r.total_seconds)}</b><span>זמן באתר</span></div><div class="kpi"><b class="num">${r._ans}</b><span>שאלות שנפתרו</span></div><div class="kpi"><b>${r._ready === null ? '—' : Math.round(r._ready * 100) + '%'}</b><span>מוכנות למבחן</span></div></div>
       <h4>כניסות אחרונות</h4>
@@ -6297,7 +6325,7 @@ function vDash(m) {
   vBook($('#bookWrap'));
   $('#dayDone').onchange = e => { S.plan[pi] = e.target.checked; save(); render(); };
   $('#examDate').onchange = () => { const v = dateValue('examDate'); $('#examDate').setAttribute('aria-invalid', String(!v)); if (v) { S.examDate = v; save(); nav(); render(); } };
-  $('#setName').onchange = e => { if (e.target.value.trim()) { ACC.rename(e.target.value); S.name = e.target.value.trim(); save(); nav(); render(); } };
+  $('#setName').onchange = async e => { const v = e.target.value.trim(); if (!v) return; const bad = ACC.nameProblem(v); if (bad) { toast(bad); e.target.value = S.name; return; } try { await ACC.rename(v); S.name = v; save(); nav(); render(); } catch (x) { toast('השם לא נשמר: ' + x.message); e.target.value = S.name; } };
   $('#resetBtn').onclick = () => {
     $('#resetWrap').innerHTML = `<div class="confirm">למחוק את כל ההתקדמות? <button class="btn danger sm" id="resetYes">למחוק</button><button class="btn sm" id="resetNo">ביטול</button></div>`;
     $('#resetYes').onclick = () => { const keep = {name: S.name, examDate: S.examDate, started: true}; S = Object.assign({hist: {}, seen: {}, mistakes: [], lessons: {}, plan: {}, exams: [], days: [], answered: 0, book: {}}, keep); save(); nav(); render(); };
@@ -6491,11 +6519,19 @@ function buildExam(n) { // questions per chapter in proportion to the chapter's 
   });
   return shuffle(qs);
 }
+const xKey = () => (ACC.user() ? ACC.key(COURSE) : 'silas:none') + ':exam';
+function keepX() { try { if (X && X.running) localStorage.setItem(xKey(), JSON.stringify(X)); else localStorage.removeItem(xKey()); } catch (e) {} }
+function restoreX() { // back to an exam that was open when the page was refreshed or closed
+  try { const x = JSON.parse(localStorage.getItem(xKey())); if (!x || !x.running || !Array.isArray(x.qs)) return false; X = x; } catch (e) { return false; }
+  clearInterval(timerId); timerId = setInterval(tick, 1000); if (X.end <= Date.now()) { finishExam(); return true; } return true;
+}
+window.addEventListener('beforeunload', e => { if (X && X.running) { keepX(); e.preventDefault(); e.returnValue = ''; } });
 function startExam(qs, minutes, real) {
-  X = {qs, ans: {}, flag: {}, cur: 0, end: Date.now() + minutes * 60000, start: Date.now(), running: true, real};
+  X = {qs, ans: {}, flag: {}, cur: 0, end: Date.now() + minutes * 60000, start: Date.now(), running: true, real}; keepX();
   clearInterval(timerId); timerId = setInterval(tick, 1000); nav(); render(); window.scrollTo(0, 0);
 }
 function vExam(m) {
+  if (X && X.running) keepX(); // every answer redraws the exam, so this keeps the saved copy current
   if (!X) {
     m.innerHTML = `<header class="page"><h2>מבחנים</h2><p>כמו במבחן האמיתי: 5 תשובות לכל שאלה, שעון, ובלי משוב עד ההגשה. אחרי ההגשה מקבלים ציון, פירוט לפי נושא והסבר לכל שאלה.</p></header>
     <div class="examgrid">
@@ -6540,12 +6576,12 @@ function tick() {
   if (s <= 0) finishExam();
 }
 function finishExam() {
-  clearInterval(timerId); X.running = false; nav();
+  clearInterval(timerId); X.running = false; keepX(); nav();
   let r = 0; const by = {};
   X.qs.forEach((q, i) => {
     const ok = isRight(q, X.ans[i]); if (ok) r++;
     (by[q.t] = by[q.t] || [0, 0])[1]++; if (ok) by[q.t][0]++;
-    record(q.t, ok); if (q.id) S.seen[q.id] = true;
+    if (X.ans[i] != null) { record(q.t, ok); if (q.id) S.seen[q.id] = true; }
     if (!ok) addMistake(q, X.ans[i]);
   });
   X.score = r / X.qs.length; X.by = by; X.right = r; if (X.real) S.real25 = X.score;
@@ -6752,10 +6788,12 @@ document.addEventListener('keydown', e => { const c = e.target.closest && e.targ
 ACC.ready().catch(() => {}).then(async () => {
   if (ACC.user() && !ACC.recovering() && returnTo()) return;
   loadCourse(); if (ACC.user()) await syncCourse();
+  const backToExam = ACC.user() && !ACC.recovering() && restoreX();
   if (ACC.recovering()) view = 'reset';
   else if (!ACC.user()) view = 'login'; else if ((view === 'admin' && !ACC.user().isAdmin) || ['login', 'forgot', 'reset', 'blocked'].includes(view)) view = 'home'; // signed in: a refresh never lands back on the sign-in screen
+  if (backToExam && !ACC.user().blocked) view = 'exam';
   ACC.onRecovery = () => go('reset');
-  ACC.onBlocked = () => { if (typeof stopVideo === 'function') stopVideo(); clearInterval(timerId); nav(); render(); };
+  ACC.onBlocked = () => { stopAll(); nav(); render(); };
   nav(); render(bootTopic ? {topic: bootTopic} : {}); setHdr(); fixBidi(document.getElementById('main'));
   try { history.replaceState({v: view, topic: bootTopic}, '', CLEAN_VIEWS.includes(view) ? location.pathname + location.search : view === 'learn' && bootTopic ? location.hash : '#' + view); } catch (e) {}
 });

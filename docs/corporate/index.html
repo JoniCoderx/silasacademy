@@ -1144,12 +1144,12 @@ const ACC = (() => {
     if (!sid) try { const {data} = await sb.rpc('start_session', {p_device: navigator.userAgent}); sid = data; } catch (e) { sid = null; }
     if (sid && !resumed) locate(sid); else if (sid) { geoAt = 0; refreshPlace(sid); }
     lastBeat = Date.now();
-    const send = () => { if (!sid || document.hidden) { lastBeat = Date.now(); return; } const s = Math.round((Date.now() - lastBeat) / 1000); lastBeat = Date.now(); sb.rpc('heartbeat', {p_session: sid, p_seconds: s}).then(r => { if (r && r.data === true && me && !me.blocked) { await_block(); } }, () => {}); };
+    const send = force => { if (!sid || (document.hidden && !force)) { lastBeat = Date.now(); return; } const s = Math.round((Date.now() - lastBeat) / 1000); lastBeat = Date.now(); sb.rpc('heartbeat', {p_session: sid, p_seconds: s}).then(r => { if (!r || !me) return; if (r.data === true && !me.blocked) await_block(); else if (r.data === false && me.blocked) location.reload(); }, () => {}); };
     const await_block = async () => { await loadMe((await sb.auth.getUser()).data.user); if (me && me.blocked && cloud.onBlocked) cloud.onBlocked(); };
     beat = setInterval(() => { send(); refreshPlace(sid); }, 45000);
-    track.vis = () => { if (document.hidden) send(); else { lastBeat = Date.now(); refreshPlace(sid); } };
+    track.vis = () => { if (document.hidden) send(true); else { lastBeat = Date.now(); refreshPlace(sid); } };
     document.addEventListener('visibilitychange', track.vis);
-    track.hide = () => { send(); if (sid) { try { sessionStorage.setItem(SID_KEY, JSON.stringify({s: sid, u: me && me.id, t: Date.now()})); } catch (e) {} endVisit(sid); } };
+    track.hide = () => { send(true); if (sid) { try { sessionStorage.setItem(SID_KEY, JSON.stringify({s: sid, u: me && me.id, t: Date.now()})); } catch (e) {} endVisit(sid); } };
     track.show = e => { if (e.persisted && me) track(); }; // page restored from the back/forward cache: a new visit
     window.addEventListener('pagehide', track.hide);
     window.addEventListener('pageshow', track.show);
@@ -1163,19 +1163,21 @@ const ACC = (() => {
   }
   // admin: the "_visits" notes of every learner (or one), merged onto the session rows by id
   const visitNotes = async uid => {
-    let q = sb.from('progress').select('data').eq('course', VISITS); if (uid) q = q.eq('user_id', uid);
-    const out = {}; try { const {data} = await q; (data || []).forEach(r => Object.assign(out, (r.data && r.data.s) || {})); } catch (e) {}
+    let q = sb.from('progress').select('user_id,data').eq('course', VISITS); if (uid) q = q.eq('user_id', uid);
+    const out = {}; try { const {data} = await q; (data || []).forEach(r => { const s = (r.data && r.data.s) || {}; for (const k in s) if (s[k] && typeof s[k] === 'object') out[k] = Object.assign({}, s[k], {_u: r.user_id}); }); } catch (e) {}
     return out;
   };
   const withNotes = (rows, notes) => (rows || []).map(x => {
-    const n = notes[x.id]; if (!n) return x;
+    const n = notes[x.id]; if (!n || n._u !== x.user_id) return x; // a learner can only annotate their own visits
+    const num = v => (v === null || v === undefined || v === '' || !isFinite(+v)) ? null : +v;
     const y = Object.assign({}, x);
     if (!y.city && n.ci) Object.assign(y, {city: n.ci, country: n.c || '', flag: n.f || ''});
-    if (n.lat != null) Object.assign(y, {lat: n.lat, lng: n.lng, acc: n.acc});
+    if (num(n.lat) != null && num(n.lng) != null) Object.assign(y, {lat: num(n.lat), lng: num(n.lng), acc: num(n.acc)});
     if (n.at) y.geo_at = n.at;
     if (!y.ended_at && n.e) y.ended_at = n.e;
     return y;
   });
+  const allRows = async mk => { let out = []; for (let from = 0; ; from += 1000) { const {data, error} = await mk().range(from, from + 999); if (error) return {data: out.length ? out : null, error}; out = out.concat(data || []); if (!data || data.length < 1000) return {data: out, error: null}; } };
   let pending = null, mfaPending = false, capToken = '';
   const cap = () => capToken || undefined; // Cloudflare Turnstile token, when the bot check is switched on
   async function needsCode() { try { const {data} = await sb.auth.mfa.getAuthenticatorAssuranceLevel(); return !!data && data.nextLevel === 'aal2' && data.currentLevel !== 'aal2'; } catch (e) { return false; } }
@@ -1248,8 +1250,8 @@ const ACC = (() => {
       recovering = false;
     },
     recovering: () => recovering,
-    async rename(name) { if (!me || !name.trim()) return; me.name = name.trim(); await sb.from('profiles').update({name: me.name}).eq('id', me.id); },
-    async remove() { await cloud.logout(); },
+    async rename(name) { if (!me || !name.trim()) return; const {error} = await sb.from('profiles').update({name: name.trim()}).eq('id', me.id); if (error) throw new Error(he(error)); me.name = name.trim(); },
+    async remove() { const id = me && me.id; await cloud.logout(); if (id) Object.keys(localStorage).filter(k => k.startsWith(`silas:${id}:`)).forEach(k => localStorage.removeItem(k)); },
     async pullProgress(course) {
       if (!me) return null;
       const {data} = await sb.from('progress').select('data,updated_at').eq('user_id', me.id).eq('course', course).maybeSingle();
@@ -1267,16 +1269,16 @@ const ACC = (() => {
       // every admin call gives up after a while instead of leaving the panel waiting forever (e.g. after the computer slept)
       _slow(p, ms = 20000) { return Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error('השרת לא ענה בזמן. בדקו את החיבור ונסו שוב.')), ms))]); },
       async users() {
-        const [p, g] = await Promise.all([sb.from('profiles').select('*').order('created_at', {ascending: false}), sb.from('progress').select('user_id,course,data,updated_at')]);
-        if (p.error) throw new Error(he(p.error));
+        const [p, g] = await Promise.all([allRows(() => sb.from('profiles').select('*').order('created_at', {ascending: false})), allRows(() => sb.from('progress').select('user_id,course,data,updated_at').order('user_id').order('course'))]);
+        if (p.error) throw new Error(he(p.error)); if (g.error) throw new Error(he(g.error));
         const prog = {}; (g.data || []).forEach(r => { if (String(r.course).startsWith('_')) return; /* '_…' rows are notes, not course progress */ (prog[r.user_id] = prog[r.user_id] || {})[r.course] = r; });
         return p.data.map(u => { const c = prog[u.id] || {}; return {...u, progress: c['stats-finance'] || null, courses: c}; });
       },
       async recent(days = 30) { // every visit in the window, for the activity chart
         const since = new Date(Date.now() - days * 864e5).toISOString();
         const notes = visitNotes();
-        let {data, error} = await sb.from('sessions').select('id,user_id,started_at,last_ping,ended_at,seconds,city,country,flag').gte('started_at', since).order('started_at', {ascending: false}).limit(5000);
-        if (error) ({data, error} = await sb.from('sessions').select('id,user_id,started_at,last_ping,seconds').gte('started_at', since).order('started_at', {ascending: false}).limit(5000)); // before supabase-live.sql
+        let {data, error} = await allRows(() => sb.from('sessions').select('id,user_id,started_at,last_ping,ended_at,seconds,city,country,flag').gte('started_at', since).order('started_at', {ascending: false}));
+        if (error) ({data, error} = await allRows(() => sb.from('sessions').select('id,user_id,started_at,last_ping,seconds').gte('started_at', since).order('started_at', {ascending: false}))); // before supabase-live.sql
         if (error) throw new Error(he(error)); return withNotes(data, await notes);
       },
       async sendEmail(uid, subject, html, text) { // a designed email through the server (Brevo); the key never leaves Supabase
@@ -1449,7 +1451,7 @@ function readiness() {
   const cs = Object.values(S.cases); const caseScore = cs.length ? cs.reduce((a, c) => a + (c.score || 0), 0) / (CASES.reduce((a, c) => a + c.parts.length, 0) || 1) : 0;
   return Math.min(1, mc * 0.75 + caseScore * 0.25);
 }
-const daysLeft = () => S.examDate ? Math.ceil((new Date(S.examDate + 'T09:00') - new Date()) / 864e5) : null;
+const daysLeft = () => { if (!S.examDate) return null; const [y, mo, d] = S.examDate.split('-').map(Number), n = new Date(); return Math.round((Date.UTC(y, mo - 1, d) - Date.UTC(n.getFullYear(), n.getMonth(), n.getDate())) / 864e5); }; // 0 on exam day
 
 // ---------- small ui helpers ----------
 function toast(msg) { let t = $('.toast'); if (!t) { t = document.createElement('div'); t.className = 'toast'; t.setAttribute('role', 'status'); document.body.appendChild(t); } t.textContent = msg; t.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), 2600); }
@@ -1460,8 +1462,9 @@ const secTag = s => `<span class="secpill">ס׳ ${esc(s)}</span>`;
 const VIEWS = [['dash', 'בית'], ['learn', 'לימוד'], ['practice', 'תרגול'], ['cases', 'מקרים'], ['exam', 'מבחנים'], ['law', 'ספר החוק']];
 const PARENT = {unit: 'learn', case: 'cases', mistakes: 'practice', route: 'law'};
 let view = 'dash', arg = null;
-function parseHash() { const h = decodeURIComponent(location.hash.slice(1)); const [v, a] = h.split('/'); return {v: v || 'dash', a: a || null}; }
+function parseHash() { let h = ''; try { h = decodeURIComponent(location.hash.slice(1)); } catch (e) {} const [v, a] = h.split('/'); return {v: v || 'dash', a: a || null}; }
 function go(v, a, push = true) {
+  if ((v === 'practice' || v === 'mistakes') && v !== view) { P.q = null; P.done = false; }
   view = v; arg = a || null; document.body.classList.add('vchange'); clearTimeout(go.t); go.t = setTimeout(() => document.body.classList.remove('vchange'), 700);
   const h = '#' + v + (a ? '/' + a : ''); if (push && location.hash !== h) history.pushState(null, '', h);
   nav(); render(); window.scrollTo(0, 0);
@@ -1652,8 +1655,23 @@ function vExam(m) {
 function startExam(id) {
   let ex = CORP.exams.find(e => e.id === id);
   if (!ex) { const c = CASES[Math.floor(Math.random() * CASES.length)], mc = MCQ.filter(q => q.unit !== 'exam').sort(() => Math.random() - .5).slice(0, 4); ex = {id: 'mock', title: 'מבחן אימון', open: c, mc}; }
-  Object.assign(X, {id, ex, start: Date.now(), ans: {}, open: {}, done: false}); clearInterval(X.t); X.t = setInterval(() => { const el = $('#xclock'); if (el) el.textContent = clock(); }, 1000); render();
+  Object.assign(X, {id, ex, start: Date.now(), ans: {}, open: {}, done: false}); keepX(); clearInterval(X.t); X.t = setInterval(tickX, 1000); render();
 }
+const tickX = () => { const el = $('#xclock'); if (el) el.textContent = clock(); if (!X.done && Date.now() - X.start >= 150 * 60000) handIn(); };
+const XK = () => ACC.key(CCOURSE) + ':exam', QID = Object.fromEntries(MCQ.map(q => [q.id, q])), CID = Object.fromEntries(CASES.map(c => [c.id, c]));
+function keepX() { try { if (X.id && !X.done) localStorage.setItem(XK(), JSON.stringify({id: X.id, open: X.ex.open.id, mc: X.ex.mc.map(q => q.id), start: X.start, ans: X.ans, txt: X.open})); else localStorage.removeItem(XK()); } catch (e) {} }
+function restoreX() {
+  let k = null; try { k = JSON.parse(localStorage.getItem(XK())); } catch (e) {}
+  if (!k || !k.id) return false;
+  const ex = CORP.exams.find(e => e.id === k.id) || (CID[k.open] && Array.isArray(k.mc) && k.mc.every(i => QID[i]) ? {id: 'mock', title: 'מבחן אימון', open: CID[k.open], mc: k.mc.map(i => QID[i])} : null);
+  if (!ex) { try { localStorage.removeItem(XK()); } catch (e) {} return false; }
+  Object.assign(X, {id: k.id, ex, start: +k.start || Date.now(), ans: k.ans || {}, open: k.txt || {}, done: false}); clearInterval(X.t); X.t = setInterval(tickX, 1000); tickX(); return true;
+}
+function handIn() { // also when the time is up: no question asked
+  X.done = true; clearInterval(X.t); const mc = X.ex.mc.filter((q, n) => X.ans[n] === q.a).length; S.exams.push({id: X.id, ts: Date.now(), mc, sec: Math.round((Date.now() - X.start) / 1000)}); save(); keepX();
+  if (view === 'exam') { render(); window.scrollTo(0, 0); } else { nav(); toast('הזמן נגמר והמבחן הוגש. התוצאות מחכות בלשונית מבחנים.'); }
+}
+window.addEventListener('beforeunload', e => { if (X.id && !X.done) { keepX(); e.preventDefault(); e.returnValue = ''; } });
 function clock() { const left = Math.max(0, 150 * 60 - Math.floor((Date.now() - X.start) / 1000)); return `${Math.floor(left / 3600)}:${String(Math.floor(left % 3600 / 60)).padStart(2, '0')}:${String(left % 60).padStart(2, '0')}`; }
 function drawExam(m) {
   const ex = X.ex;
@@ -1662,9 +1680,9 @@ function drawExam(m) {
     ${ex.open.parts.map((p, i) => `<label class="field"><b>${ex.open.parts.length > 1 ? HEB[i] + '. ' : ''}${rich(p.q)}</b> <span class="note">(${p.pts} נק׳)</span><textarea rows="8" data-xo="${i}">${esc(X.open[i] || '')}</textarea></label>`).join('')}</section>
     <section class="panel"><h4>חלק ב׳ – שאלות אמריקאיות (20 נק׳)</h4>${ex.mc.map((q, n) => `<div class="qcard"><div class="qtext"><span class="qn num">${n + 1}.</span> ${rich(q.q)}</div><div class="opts">${q.o.map((o, i) => `<button class="opt ${X.ans[n] === i ? 'sel' : ''}" data-xm="${n}:${i}"><span class="k">${HEB[i]}</span><span>${rich(o)}</span></button>`).join('')}</div></div>`).join('')}</section>
     <div class="row"><button class="btn primary big" id="xend2">הגשת המבחן</button></div>`;
-  m.querySelectorAll('[data-xo]').forEach(t => t.oninput = () => { X.open[t.dataset.xo] = t.value; });
-  m.querySelectorAll('[data-xm]').forEach(b => b.onclick = () => { const [n, i] = b.dataset.xm.split(':').map(Number); X.ans[n] = i; m.querySelectorAll(`[data-xm^="${n}:"]`).forEach(x => x.classList.toggle('sel', x === b)); });
-  const end = () => { if (!confirm('להגיש את המבחן?')) return; X.done = true; clearInterval(X.t); const mc = X.ex.mc.filter((q, n) => X.ans[n] === q.a).length; S.exams.push({id: X.id, ts: Date.now(), mc, sec: Math.round((Date.now() - X.start) / 1000)}); save(); render(); window.scrollTo(0, 0); };
+  m.querySelectorAll('[data-xo]').forEach(t => t.oninput = () => { X.open[t.dataset.xo] = t.value; clearTimeout(t.kt); t.kt = setTimeout(keepX, 400); });
+  m.querySelectorAll('[data-xm]').forEach(b => b.onclick = () => { const [n, i] = b.dataset.xm.split(':').map(Number); X.ans[n] = i; keepX(); m.querySelectorAll(`[data-xm^="${n}:"]`).forEach(x => x.classList.toggle('sel', x === b)); });
+  const end = () => { if (!confirm('להגיש את המבחן?')) return; handIn(); };
   $('#xend').onclick = end; $('#xend2').onclick = end;
 }
 function drawExamResult(m) {
@@ -1706,6 +1724,12 @@ function bindRoute() {
   draw();
 }
 
+async function resyncC() {
+  if (!ACC.user() || (X.id && !X.done) || resyncC.busy) return; resyncC.busy = true;
+  try { const b = S._at; await sync(); if (S._at !== b) { nav(); render(); } } finally { resyncC.busy = false; }
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) resyncC(); });
+window.addEventListener('storage', e => { if (ACC.user() && e.key === ACC.key(CCOURSE) && !(X.id && !X.done)) { loadS(); nav(); render(); } });
 // ---------- boot ----------
 $('#main').innerHTML = '<p class="note" style="text-align:center;padding:40px 0">טוען…</p>';
 (function () { const b = $('#cbar b'); if (b) b.textContent = 'דיני תאגידים'; const a = $('#cbar a'); if (a) { a.href = '/'; a.removeAttribute('data-go'); } const bl = $('.brandlink'); if (bl) { bl.href = '/'; bl.removeAttribute('data-go'); } })();
@@ -1716,6 +1740,7 @@ ACC.ready().catch(() => {}).then(async () => {
   ACC.onBlocked = () => location.replace('/');
   loadS(); await sync();
   const p = parseHash(); view = p.v; arg = p.a; if (!VIEWS.some(v => v[0] === view) && !PARENT[view]) view = 'dash';
+  if (restoreX() && !X.done) { view = 'exam'; arg = null; try { history.replaceState(null, '', '#exam'); } catch (e) {} }
   nav(); render();
 });
 </script>
