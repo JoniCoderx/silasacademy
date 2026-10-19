@@ -657,6 +657,7 @@ nav.tabs{mask-image:linear-gradient(to left,#000 calc(100% - 28px),transparent);
 @media (max-width:640px){body:not([data-view="home"]) .wafab{width:52px;height:52px;padding:0;justify-content:center}body:not([data-view="home"]) .wafab .walabel{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}}
 
 .wafab[hidden]{display:none}
+@media (max-width:720px){#main{padding-bottom:84px}} /* the last button on a phone page never sits under the WhatsApp button */
 @media print{.wafab{display:none}}
 /* admin: share a learner's place on WhatsApp */
 .washare{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:#15803d;color:#fff;vertical-align:middle;margin-inline-start:4px;flex:none}
@@ -1394,7 +1395,13 @@ const dateField = (id, label, iso) => `<div class="field dp"><label for="${id}">
   <button type="button" class="dpbtn" data-dp="${id}" aria-label="בחירה מלוח השנה" aria-expanded="false" aria-controls="${id}-cal"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg></button></div>
   <span class="dphint" id="${id}-h">לדוגמה: 20.6.2026</span>
   <div class="dpop" id="${id}-cal" role="dialog" aria-label="לוח שנה" hidden></div></div>`;
-const dateValue = id => parseDMY($('#' + id).value);
+const dateValue = id => {
+  const el = $('#' + id); if (!el) return null; const v = parseDMY(el.value), n = new Date(), t = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
+  const bad = !!el.value.trim() && (!v || v < t), box = el.closest('.field') || el.parentNode; let msg = box.parentNode.querySelector('.dperr');
+  if (bad && !msg) { msg = document.createElement('p'); msg.className = 'note dperr'; msg.setAttribute('role', 'alert'); box.after(msg); }
+  if (msg) msg.textContent = bad ? (v ? 'התאריך הזה כבר עבר.' : 'תאריך לא תקין. כתבו למשל 23.10.2026') : '';
+  el.setAttribute('aria-invalid', String(bad)); return bad ? null : v;
+};
 const HMONTHS = ['ינואר', 'פברואר', 'מרץ', 'אפריל', 'מאי', 'יוני', 'יולי', 'אוגוסט', 'ספטמבר', 'אוקטובר', 'נובמבר', 'דצמבר'];
 function dpDraw(id, y, mo) {
   const box = $('#' + id + '-cal'), sel = dateValue(id), today = todayISO();
@@ -1464,6 +1471,7 @@ const PARENT = {unit: 'learn', case: 'cases', mistakes: 'practice', route: 'law'
 let view = 'dash', arg = null;
 function parseHash() { let h = ''; try { h = decodeURIComponent(location.hash.slice(1)); } catch (e) {} const [v, a] = h.split('/'); return {v: v || 'dash', a: a || null}; }
 function go(v, a, push = true) {
+  if (v === 'exam' && typeof X !== 'undefined' && X.done && X.shown) { X.id = null; X.done = false; X.shown = false; }
   if ((v === 'practice' || v === 'mistakes') && v !== view) { P.q = null; P.done = false; }
   view = v; arg = a || null; document.body.classList.add('vchange'); clearTimeout(go.t); go.t = setTimeout(() => document.body.classList.remove('vchange'), 700);
   const h = '#' + v + (a ? '/' + a : ''); if (push && location.hash !== h) history.pushState(null, '', h);
@@ -1569,7 +1577,11 @@ function vUnit(m) {
       ${l.length ? `<button class="btn primary" id="u_pr">לתרגל ${l.length} שאלות</button>` : ''}
       ${cs.length ? `<button class="btn" data-go="case" data-arg="${cs[0].id}">שאלת מקרה</button>` : ''}
       ${UNITS[i + 1] ? `<button class="btn ghost" data-go="unit" data-arg="${UNITS[i + 1].id}">ליחידה הבאה ‹</button>` : ''}</div></section></article>`;
-  if (!S.lessons[u.id]) { S.lessons[u.id] = Date.now(); save(); }
+  if (!S.lessons[u.id]) {
+    const mark = () => { if (view === 'unit' && arg === u.id && !S.lessons[u.id]) { S.lessons[u.id] = Date.now(); save(); } };
+    clearTimeout(vUnit.t); vUnit.t = setTimeout(mark, 40000);
+    const end = m.querySelector('.lend'); if (end && 'IntersectionObserver' in window) { const io = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) { io.disconnect(); mark(); } }); io.observe(end); }
+  }
   const b = $('#u_pr'); if (b) b.onclick = () => { P.filter = u.id; P.q = null; go('practice'); };
 }
 
@@ -1686,6 +1698,7 @@ function drawExam(m) {
   $('#xend').onclick = end; $('#xend2').onclick = end;
 }
 function drawExamResult(m) {
+  X.shown = true;
   const ex = X.ex, mc = ex.mc.filter((q, n) => X.ans[n] === q.a).length;
   m.innerHTML = crumbs(['מבחנים', 'exam'], ['תוצאות']) + `<header class="page"><h2>תוצאות: ${esc(ex.title)}</h2><p class="lead">חלק ב׳: <b>${mc}/4</b> נכונות (${mc * 5} מתוך 20 נק׳). את חלק א׳ בודקים מול תשובת המופת וטבלת הבדיקה.</p></header>
     <section class="panel"><h4>חלק א׳ – תשובת מופת</h4>${ex.open.parts.map((p, i) => `<div class="cpart"><h5>${ex.open.parts.length > 1 ? HEB[i] + '. ' : ''}${rich(p.q)}</h5>${X.open[i] ? `<details><summary>מה כתבתי</summary><p class="mine">${esc(X.open[i])}</p></details>` : ''}<ol class="ssteps">${p.model.map(x => `<li>${rich(x)}</li>`).join('')}</ol>

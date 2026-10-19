@@ -668,6 +668,7 @@ nav.tabs{mask-image:linear-gradient(to left,#000 calc(100% - 28px),transparent);
 @media (max-width:640px){body:not([data-view="home"]) .wafab{width:52px;height:52px;padding:0;justify-content:center}body:not([data-view="home"]) .wafab .walabel{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}}
 
 .wafab[hidden]{display:none}
+@media (max-width:720px){#main{padding-bottom:84px}} /* the last button on a phone page never sits under the WhatsApp button */
 @media print{.wafab{display:none}}
 /* admin: share a learner's place on WhatsApp */
 .washare{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:#15803d;color:#fff;vertical-align:middle;margin-inline-start:4px;flex:none}
@@ -5430,6 +5431,15 @@ async function resync() {
 document.addEventListener('visibilitychange', () => { if (!document.hidden) resync(); });
 window.addEventListener('focus', () => { if (Date.now() - (resync.at || 0) > 20000) { resync.at = Date.now(); resync(); } });
 window.addEventListener('storage', e => { if (!ACC.user() || e.key !== ACC.key(COURSE) || (X && X.running)) return; loadCourse(); nav(); render(); });
+// other courses' records from a backup file: plain values only (no markup), bounded in size
+function deepClean(v, depth = 0) {
+  if (typeof v === 'string') return v.replace(/[<>]/g, '').slice(0, 3000);
+  if (typeof v === 'number') return isFinite(v) ? v : 0;
+  if (typeof v === 'boolean' || v === null) return v;
+  if (depth > 6 || typeof v !== 'object') return null;
+  if (Array.isArray(v)) return v.slice(0, 500).map(x => deepClean(x, depth + 1));
+  const o = {}; for (const [k, x] of Object.entries(v).slice(0, 3000)) if (/^[\w\-:.]{1,80}$/.test(k)) o[k] = deepClean(x, depth + 1); return o;
+}
 // a backup file is outside data: keep only known fields, as plain numbers/strings, and rebuild mistakes from the question bank
 function cleanImport(d) {
   const o = {}, num = v => isFinite(+v) ? +v : 0, obj = v => v && typeof v === 'object' && !Array.isArray(v) ? v : {};
@@ -5643,7 +5653,13 @@ const dateField = (id, label, iso) => `<div class="field dp"><label for="${id}">
   <button type="button" class="dpbtn" data-dp="${id}" aria-label="בחירה מלוח השנה" aria-expanded="false" aria-controls="${id}-cal"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg></button></div>
   <span class="dphint" id="${id}-h">לדוגמה: 20.6.2026</span>
   <div class="dpop" id="${id}-cal" role="dialog" aria-label="לוח שנה" hidden></div></div>`;
-const dateValue = id => parseDMY($('#' + id).value);
+const dateValue = id => {
+  const el = $('#' + id); if (!el) return null; const v = parseDMY(el.value), n = new Date(), t = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
+  const bad = !!el.value.trim() && (!v || v < t), box = el.closest('.field') || el.parentNode; let msg = box.parentNode.querySelector('.dperr');
+  if (bad && !msg) { msg = document.createElement('p'); msg.className = 'note dperr'; msg.setAttribute('role', 'alert'); box.after(msg); }
+  if (msg) msg.textContent = bad ? (v ? 'התאריך הזה כבר עבר.' : 'תאריך לא תקין. כתבו למשל 23.10.2026') : '';
+  el.setAttribute('aria-invalid', String(bad)); return bad ? null : v;
+};
 const HMONTHS = ['ינואר', 'פברואר', 'מרץ', 'אפריל', 'מאי', 'יוני', 'יולי', 'אוגוסט', 'ספטמבר', 'אוקטובר', 'נובמבר', 'דצמבר'];
 function dpDraw(id, y, mo) {
   const box = $('#' + id + '-cal'), sel = dateValue(id), today = todayISO();
@@ -5734,7 +5750,8 @@ function vHome(m) {
 }
 function vLogin(m) {
   if (ACC.mfaNeeded && ACC.mfaNeeded()) return vMfa(m);
-  const signup = vLogin.mode !== 'login' && (ACC.mode === 'cloud' || !ACC.count() || vLogin.mode === 'signup');
+  let known = false; try { known = !!localStorage.getItem('silas_known'); } catch (e) {}
+  const signup = vLogin.mode === 'signup' || (vLogin.mode !== 'login' && !known && (ACC.mode === 'cloud' || !ACC.count()));
   m.innerHTML = `<div class="authwrap">
   <section class="stage">
     <div class="auth-brand">${LOGO_S}<div><b dir="ltr">silas academy</b><span style="color:rgb(255 255 255 / .7)">${BRAND.he}</span></div></div>
@@ -5763,13 +5780,13 @@ function vLogin(m) {
     e.preventDefault(); const err = $('#au_err'); err.textContent = '';
     try {
       if (signup) await ACC.signup($('#au_name').value, $('#au_email').value, $('#au_pw').value);
-      else await ACC.login($('#au_email').value, $('#au_pw').value);
+      else { if (!$('#au_email').value.trim() || !$('#au_pw').value) throw new Error('צריך למלא אימייל וסיסמה.'); await ACC.login($('#au_email').value, $('#au_pw').value); }
       await afterSignIn();
     } catch (x) { if (x.mfa) return vMfa(m); err.textContent = x.message; capReset(); }
   };
   capMount($('#authf'));
 }
-async function afterSignIn() { if (returnTo()) return; loadCourse(); await syncCourse(); vLogin.mode = null; go(restoreX() ? 'exam' : 'home'); }
+async function afterSignIn() { try { localStorage.setItem('silas_known', '1'); } catch (e) {} const wantAdmin = location.hash === '#admin'; if (returnTo()) return; loadCourse(); await syncCourse(); vLogin.mode = null; go(restoreX() ? 'exam' : wantAdmin && ACC.user() && ACC.user().isAdmin ? 'admin' : 'home'); }
 // second step for accounts with 2-step login (the admin): the 6-digit code from the authenticator app
 function vMfa(m) {
   m.innerHTML = `<div class="authwrap single"><section class="auth">
@@ -5888,12 +5905,20 @@ function vAccount(m) {
   $('#ac_name').onchange = e => { const v = e.target.value.trim(), bad = ACC.nameProblem(v); if (bad) { toast(bad); e.target.value = u.name; return; } ACC.rename(v); S.name = v; save(); nav(); };
   if ($('#mfa_box')) drawMfa($('#mfa_box'));
   $('#ac_exp').onclick = () => {
-    const blob = new Blob([JSON.stringify({brand: BRAND.en, v: 1, course: COURSE, data: S})], {type: 'application/json'});
+    const all = {}, pre = ACC.key('');
+    try { for (const k of Object.keys(localStorage)) if (k.startsWith(pre) && !k.endsWith(':exam')) { const c = k.slice(pre.length); if (c && !c.startsWith('_')) all[c] = JSON.parse(localStorage.getItem(k)); } } catch (e) {}
+    all[COURSE] = S;
+    const blob = new Blob([JSON.stringify({brand: BRAND.en, v: 2, courses: all})], {type: 'application/json'});
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `silas-academy-${todayISO()}.json`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   };
   $('#ac_imp').onchange = e => {
     const f = e.target.files[0]; if (!f) return; const rd = new FileReader();
-    rd.onload = () => { try { const j = JSON.parse(rd.result); if (!j || j.course !== COURSE || !j.data) throw 0; S = Object.assign(blankS(), cleanImport(j.data), {name: u.name}); save(); $('#ac_msg').textContent = 'ההתקדמות נטענה.'; } catch (x) { $('#ac_msg').textContent = 'הקובץ לא נראה כמו קובץ גיבוי של האקדמיה.'; } };
+    rd.onload = () => { try { const j = JSON.parse(rd.result), courses = j && j.v === 2 && j.courses && typeof j.courses === 'object' ? j.courses : j && j.course === COURSE && j.data ? {[COURSE]: j.data} : null; if (!courses) throw 0;
+        let n = 0;
+        for (const [c, d] of Object.entries(courses)) { if (!/^[\w-]{1,30}$/.test(c) || c.startsWith('_') || !d || typeof d !== 'object') continue; n++;
+          if (c === COURSE) { S = Object.assign(blankS(), cleanImport(d), {name: u.name}); save(); }
+          else { const x = Object.assign(deepClean(d), {_at: Date.now()}); try { localStorage.setItem(ACC.key(c), JSON.stringify(x)); } catch (e) {} ACC.pushProgress(c, x); } }
+        if (!n) throw 0; $('#ac_msg').textContent = 'ההתקדמות נטענה.'; } catch (x) { $('#ac_msg').textContent = 'הקובץ לא נראה כמו קובץ גיבוי של האקדמיה.'; } };
     rd.readAsText(f);
   };
   $('#ac_out').onclick = async () => { stopAll(); await ACC.logout(); S = blankS(); vLogin.mode = 'login'; go('login'); };
@@ -6061,14 +6086,15 @@ async function vAdmin(m) {
   <section class="panel" id="ad_msgs"></section>
   <section class="panel">
     <div class="row between adtitle"><h4>הלומדים</h4><span class="note">לחיצה על לומד פותחת את כל הפרטים</span></div>
-    <div class="chips" role="group" aria-label="סינון">${Object.entries(F).map(([key, [l]]) => `<button class="chipbtn" data-f="${key}" aria-pressed="${key === state.f}">${l} <span class="cnt">${learners.filter(F[key][1]).length}</span></button>`).join('')}</div>
+    <div class="chips" role="group" aria-label="סינון">${Object.entries(F).map(([key, [l]]) => `<button class="chipbtn" data-f="${key}" aria-pressed="${key === state.f}">${l} <span class="cnt">${key === 'all' ? rows.length : learners.filter(F[key][1]).length}</span></button>`).join('')}</div>
     <div class="row between adtools"><input id="ad_q" type="search" placeholder="חיפוש לפי שם או אימייל" aria-label="חיפוש משתמשים" value="${esc(state.q)}">
       <select id="ad_sort" aria-label="מיון">${[['last', 'מחוברים ופעילים לאחרונה'], ['created_at', 'הרשמה'], ['total_seconds', 'זמן באתר'], ['answered', 'שאלות שנפתרו'], ['ready', 'מוכנות']].map(([v, l]) => `<option value="${v}" ${state.sort === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
     <div class="tbl-wrap admwrap"><table class="adm users"><thead><tr><th>לומד</th><th>מצב</th><th>מיקום</th><th>פעילות</th><th>התקדמות</th></tr></thead><tbody id="ad_rows"></tbody></table></div>
   </section>
   <div class="addrawer" id="ad_one" hidden><div class="adscrim" data-close></div><aside class="adpanel" role="dialog" aria-modal="true" aria-labelledby="ad_name" tabindex="-1"></aside></div>`;
   const draw = () => {
-    const q = state.q.toLowerCase(), fn = F[state.f][1];
+    m.querySelectorAll('[data-f] .cnt').forEach(c => { const k = c.parentNode.dataset.f; c.textContent = k === 'all' ? rows.length : learners.filter(F[k][1]).length; }); // counts stay right after a block
+    const q = state.q.trim().toLowerCase(), fn = F[state.f][1];
     const list = rows.filter(r => (state.f === 'all' || (!r.is_admin && fn(r))) && (!q || (r.name + ' ' + r.email).toLowerCase().includes(q))).sort((a, b) => {
       if (state.sort === 'answered') return b._ans - a._ans;
       if (state.sort === 'ready') return (b._ready || 0) - (a._ready || 0);
@@ -6130,6 +6156,7 @@ async function vAdmin(m) {
     return {su, html, text};
   };
   const sendOne = async (r, key, btn) => {
+    if (!String(tplOf(key).subject || '').trim()) { toast('להודעה הזו אין נושא. ערכו אותה לפני השליחה.'); return false; }
     if (btn) { btn.disabled = true; btn.textContent = 'שולח…'; }
     const d = designed(r, key);
     try { await ACC.admin.sendEmail(r.id, d.su, d.html, d.text); markSent(r.id, key); toast(`נשלח ל${r.name} ✓`); return true; }
@@ -6152,14 +6179,14 @@ async function vAdmin(m) {
         <div class="row"><button class="btn sm primary" id="ms_save">שמירת ההודעה</button><button class="btn sm ghost" id="ms_reset">חזרה לנוסח המקורי</button></div>
       </details>
       ${list.length ? `<ul class="mslist">${list.map(r => { const ls = lastSent(r.id), d = daysSince(r._last); return `<li data-ms="${r.id}">
-        <div class="msw"><b>${esc(r.name)}</b><span class="note"><bdi>${r._last ? `לא נכנס/ה ${d === 0 ? 'מהיום' : d === 1 ? 'מאתמול' : `${d} ימים`}` : 'עוד לא נכנס/ה'}</bdi> · <bdi>${r._ans} שאלות</bdi>${examDays(r) !== null && examDays(r) >= 0 ? ` · <bdi>מבחן בעוד ${examDays(r)} ימים</bdi>` : ''}</span>
+        <div class="msw"><b>${esc(r.name)}</b><span class="note"><bdi>${r._last ? (d === 0 ? 'נכנס/ה היום' : `לא נכנס/ה ${d === 1 ? 'מאתמול' : `${d} ימים`}`) : 'עוד לא נכנס/ה'}</bdi> · <bdi>${r._ans} שאלות</bdi>${examDays(r) !== null && examDays(r) >= 0 ? ` · <bdi>מבחן בעוד ${examDays(r)} ימים</bdi>` : ''}</span>
         ${ls ? `<span class="sentchip">✓ נשלח ${ago(ls.t)}</span>` : ''}</div>
         <div class="msb"><button class="btn sm ghost" data-prev="${r.id}">תצוגה</button><button class="btn sm primary msgo" data-mail="${r.id}">שליחה מעוצבת</button><a class="btn sm ghost" data-send="${r.id}" href="${mailLinks(r, MS.tpl).gmail}" target="_blank" rel="noopener" title="טקסט פשוט, מתוך ה־Gmail שלך">Gmail</a></div>
         <div class="msprev" id="pv_${r.id}" hidden></div></li>`; }).join('')}</ul>` : '<p class="note adempty">אין כרגע לומדים שמתאימים להודעה הזו. 🎉</p>'}`;
     box.querySelectorAll('[data-tpl]').forEach(b => b.onclick = () => { MS.tpl = b.dataset.tpl; drawMsgs(); });
     const dsel = $('#ms_days'); if (dsel) dsel.onchange = e => { MS.days = +e.target.value; drawMsgs(); };
     box.querySelectorAll('[data-tok]').forEach(b => b.onclick = () => { const ta = $('#ms_body'), p0 = ta.selectionStart; ta.value = ta.value.slice(0, p0) + b.dataset.tok + ta.value.slice(ta.selectionEnd); ta.focus(); ta.selectionStart = ta.selectionEnd = p0 + b.dataset.tok.length; });
-    $('#ms_save').onclick = () => { MS.doc.tpl[MS.tpl] = {subject: $('#ms_su').value, body: $('#ms_body').value}; saveMsgs().then(ok => { if (ok) { toast('ההודעה נשמרה.'); drawMsgs(); } }); };
+    $('#ms_save').onclick = () => { if (!$('#ms_su').value.trim() || !$('#ms_body').value.trim()) { toast('צריך נושא ותוכן להודעה.'); return; } MS.doc.tpl[MS.tpl] = {subject: $('#ms_su').value, body: $('#ms_body').value}; saveMsgs().then(ok => { if (ok) { toast('ההודעה נשמרה.'); drawMsgs(); } }); };
     $('#ms_reset').onclick = () => { delete MS.doc.tpl[MS.tpl]; saveMsgs().then(ok => { if (ok) { toast('חזרנו לנוסח המקורי.'); drawMsgs(); } }); };
     box.querySelectorAll('[data-prev]').forEach(b => b.onclick = () => { const r = byId[b.dataset.prev], pv = $('#pv_' + r.id), d = designed(r, MS.tpl);
       if (pv.hidden) { pv.innerHTML = `<p class="note"><b>אל:</b> <bdi dir="ltr">${esc(r.email)}</bdi> · <b>נושא:</b> ${esc(d.su)}</p><iframe class="msframe" title="תצוגה של המייל" sandbox></iframe>`; pv.querySelector('iframe').srcdoc = d.html; }
@@ -6294,7 +6321,7 @@ function vDash(m) {
   m.innerHTML = `
   <header class="hello"><h2>${hello}, ${esc(S.name)}</h2><p>${dl > 0 ? `יום ${pi + 1} מתוך 14 בתוכנית.` : 'בהצלחה במבחן!'}</p></header>
   <section class="today">
-    <div class="eyebrow">המשימה להיום · ${fmtDate(planDay(pi))}</div>
+    <div class="eyebrow">המשימה להיום · ${fmtDate(iso(planDay(0)) > todayISO() ? new Date() : planDay(pi))}${iso(planDay(0)) > todayISO() ? ` · התוכנית המלאה מתחילה ב־${fmtDate(planDay(0))}` : ''}</div>
     <h3>${d.h}</h3>
     ${steps ? `<ul class="steps">${steps}</ul>` : ''}
     ${d.x ? `<p class="todo">${d.x}</p>` : ''}
