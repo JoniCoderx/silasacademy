@@ -1269,9 +1269,12 @@ const ACC = (() => {
     admin: {
       // every admin call gives up after a while instead of leaving the panel waiting forever (e.g. after the computer slept)
       _slow(p, ms = 20000) { return Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error('השרת לא ענה בזמן. בדקו את החיבור ונסו שוב.')), ms))]); },
+      // the panel shows counts, exams and dates only: the heavy parts of each record (mistakes with their explanations, notes) stay on the server
       async users() {
-        const [p, g] = await Promise.all([allRows(() => sb.from('profiles').select('*').order('created_at', {ascending: false})), allRows(() => sb.from('progress').select('user_id,course,data,updated_at').order('user_id').order('course'))]);
+        const SLIM = 'user_id,course,updated_at,answered:data->answered,hist:data->hist,exams:data->exams,examDate:data->examDate,mcq:data->mcq,lessons:data->lessons,cases:data->cases';
+        const [p, g] = await Promise.all([allRows(() => sb.from('profiles').select('*').order('created_at', {ascending: false})), allRows(() => sb.from('progress').select(SLIM).order('user_id').order('course'))]);
         if (p.error) throw new Error(he(p.error)); if (g.error) throw new Error(he(g.error));
+        (g.data || []).forEach(r => { if (!r.data) r.data = {answered: r.answered, hist: r.hist, exams: r.exams, examDate: r.examDate, mcq: r.mcq, lessons: r.lessons, cases: r.cases}; });
         const prog = {}; (g.data || []).forEach(r => { if (String(r.course).startsWith('_')) return; /* '_…' rows are notes, not course progress */ (prog[r.user_id] = prog[r.user_id] || {})[r.course] = r; });
         return p.data.map(u => { const c = prog[u.id] || {}; return {...u, progress: c['stats-finance'] || null, courses: c}; });
       },
