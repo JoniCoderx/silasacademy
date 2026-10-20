@@ -1668,7 +1668,7 @@ function vUnit(m) {
 // from career/align_words.py: Whisper word timings) play as audio;
 // anything without a recording is read aloud by the device's own Hebrew voice ----------
 const F_HOST = 'חגית', M_HOST = 'מהנדי', AUD = CAR.aud || {}; // recorded episodes (free local Hebrew voice); anything else falls back to the device's voice // the two hosts (female, male voice)
-const rec = id => !!(AUD[id] && (CAR.talk || {})[id] && CAR.talk[id].lines.length === AUD[id].s.length);
+const hasRec = id => !!(AUD[id] && (CAR.talk || {})[id] && CAR.talk[id].lines.length === AUD[id].s.length);
 const plain = s => String(s || '').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
 // what the voice actually reads: symbols become words
 const speakable = s => plain(s).replace(/\s*=\s*/g, ' זה ').replace(/\s*→\s*/g, ', ולכן ').replace(/\s*[←‹›]\s*/g, ', ').replace(/\s*[–—]\s*/g, ', ').replace(/["״“”]/g, '').replace(/\s*·\s*/g, ', ').replace(/\+/g, ' ועוד ').replace(/\//g, ' או ').replace(/\s+/g, ' ');
@@ -1684,9 +1684,21 @@ function episode(u) { // a written conversation when there is one; otherwise the
   (u.cheat || []).length && L.push({s: F_HOST, x: 'ועכשיו השליפים בקצרה.'}, ...u.cheat.map(c => ({s: M_HOST, x: plain(c).replace(/=/g, ', זה ').replace(/·/g, ',')})));
   return {title: u.title, lines: L.filter(l => l.x), talk: false};
 }
-const T = {u: null, i: 0, on: false, rate: 1, voices: [], tok: 0, auto: true};
-function heVoices() { try { return speechSynthesis.getVoices().filter(v => /^(he|iw)/i.test(v.lang)); } catch (e) { return []; } }
-try { T.voices = heVoices(); speechSynthesis.onvoiceschanged = () => { T.voices = heVoices(); }; } catch (e) {}
+const T = {u: null, i: 0, on: false, rate: 1, voices: [], tok: 0, auto: true, pick: null};
+// the device's own Hebrew voices, clearest first: the neural voices (Edge "Hila/Avri Online (Natural)", Google, Apple enhanced) are far clearer than the rest
+const vScore = v => /natural|neural|online/i.test(v.name) ? 3 : /google/i.test(v.name) ? 2.5 : /enhanced|premium|siri|hila|avri|carmit/i.test(v.name) ? 2 : v.localService === false ? 1.5 : 1;
+function heVoices() { try { return speechSynthesis.getVoices().filter(v => /^(he|iw)/i.test(v.lang)).sort((a, b) => vScore(b) - vScore(a)); } catch (e) { return []; } }
+const VKEY = 'silas_strat_voice'; // the student's choice: 'rec' (the recording) or a device voice's name
+try { T.pick = localStorage.getItem(VKEY); } catch (e) {}
+// the voice that reads now: the student's choice; otherwise the device's clearest Hebrew voice (big engines vowelise Hebrew best), else the recording
+function devVoice(id) {
+  const v = T.voices;
+  if (T.pick === 'rec' && hasRec(id)) return null;
+  if (T.pick && T.pick !== 'rec') { const c = v.find(x => x.name === T.pick); if (c) return c; }
+  return v[0] || (hasRec(id) ? null : false); // false = no Hebrew voice found, let the browser try he-IL
+}
+const rec = id => hasRec(id) && devVoice(id) === null;
+try { T.voices = heVoices(); speechSynthesis.onvoiceschanged = () => { T.voices = heVoices(); if (view === 'listen' && T.u && !T.on) drawTalk(); }; } catch (e) {}
 function stopTalk() { T.on = false; T.tok++; try { speechSynthesis.cancel(); } catch (e) {} if (A.el) A.el.pause(); }
 // recorded episode: one <audio>; the highlighted line follows the time
 const A = {el: null};
@@ -1713,10 +1725,9 @@ function sayLine() {
   const ep = episode(U[T.u]); if (!T.on) return;
   if (T.i >= ep.lines.length) { const nx = UNITS[UNITS.indexOf(U[T.u]) + 1]; T.on = false; drawTalk(); if (nx && T.auto) { T.u = nx.id; arg = nx.id; T.i = 0; T.on = true; history.replaceState(null, '', '#listen/' + nx.id); drawTalk(); sayLine(); } return; }
   if (rec(T.u)) return playRec();
-  const l = ep.lines[T.i], tok = ++T.tok, u = new SpeechSynthesisUtterance(speakable(l.x));
-  const v = T.voices, noa = l.s === F_HOST;
-  u.lang = 'he-IL'; u.rate = T.rate;
-  if (v.length > 1) { u.voice = v[noa ? 0 : 1]; } else { if (v[0]) u.voice = v[0]; u.pitch = noa ? 1.18 : 0.88; } // one Hebrew voice: two pitches make two speakers
+  const l = ep.lines[T.i], tok = ++T.tok, u = new SpeechSynthesisUtterance(speakable(l.x).replace(/[\u0591-\u05C7]/g, '')); // device voices read plain Hebrew best
+  const v = devVoice(T.u);
+  u.lang = 'he-IL'; u.rate = T.rate; if (v) u.voice = v; // one clear voice at its natural pitch: easiest to follow
   u.onend = () => { if (tok !== T.tok || !T.on) return; T.i++; markLine(); sayLine(); };
   u.onerror = e => { if (tok !== T.tok || e.error === 'interrupted' || e.error === 'canceled') return; T.on = false; drawTalk(); toast('ההקראה נעצרה. נסו ללחוץ שוב על ▶.'); };
   markLine(); try { speechSynthesis.cancel(); speechSynthesis.speak(u); } catch (e) { T.on = false; drawTalk(); }
@@ -1727,8 +1738,8 @@ function vListen(m) {
   if (arg && U[arg] && T.u !== arg) { stopTalk(); T.u = arg; T.i = 0; }
   if (!T.u) {
     m.innerHTML = crumbs(['האזנה', 'listen']) + `<header class="page"><h2>האזנה</h2><p class="note">כל יחידה מוקראת כמו פודקאסט: מקשיבים בדרך, בהליכה או לפני השינה. כל יחידה מוקלטת כהסבר מדובר, והטקסט מסומן תוך כדי ההאזנה.</p></header>
-      <section class="panel"><div class="ulist">${UNITS.map((u, i) => { const e = episode(u); return `<button class="urow" data-go="listen" data-arg="${u.id}"><span class="un">🎧</span><span class="ut"><b>${i + 1}. ${esc(e.title)}</b><span class="note">${rec(u.id) ? 'פרק מוקלט' : e.talk ? 'שיחה' : 'הקראת השיעור'} · כ־${rec(u.id) ? Math.round(AUD[u.id].d / 60) : Math.max(2, Math.round(e.lines.reduce((a, l) => a + plain(l.x).split(' ').length, 0) / 140))} דק׳</span></span></button>`; }).join('')}</div></section>
-      ${'speechSynthesis' in window || UNITS.every(u => rec(u.id)) ? '' : '<section class="panel"><p class="note">הדפדפן הזה לא תומך בהקראה. נסו בכרום, בספארי או באדג׳.</p></section>'}`;
+      <section class="panel"><div class="ulist">${UNITS.map((u, i) => { const e = episode(u); return `<button class="urow" data-go="listen" data-arg="${u.id}"><span class="un">🎧</span><span class="ut"><b>${i + 1}. ${esc(e.title)}</b><span class="note">${e.talk ? 'שיחה' : 'הקראת השיעור'} · כ־${hasRec(u.id) ? Math.round(AUD[u.id].d / 60) : Math.max(2, Math.round(e.lines.reduce((a, l) => a + plain(l.x).split(' ').length, 0) / 140))} דק׳</span></span></button>`; }).join('')}</div></section>
+      ${'speechSynthesis' in window || UNITS.every(u => hasRec(u.id)) ? '' : '<section class="panel"><p class="note">הדפדפן הזה לא תומך בהקראה. נסו בכרום, בספארי או באדג׳.</p></section>'}`;
     return;
   }
   drawTalk();
@@ -1736,14 +1747,16 @@ function vListen(m) {
 function drawTalk() {
   const m = $('#main'); if (view !== 'listen') return; const u = U[T.u], ep = episode(u), i = UNITS.indexOf(u);
   m.innerHTML = crumbs(['האזנה', 'listen'], [esc(ep.title)]) + `<header class="page"><span class="eyebrow">פרק ${i + 1} מתוך ${UNITS.length}</span><h2>${esc(ep.title)}</h2>
-    ${!T.voices.length && !rec(u.id) ? '<p class="note">לא מצאנו בדפדפן קול בעברית, ננסה בכל זאת. אם לא שומעים: בטלפון אנדרואיד – כרום; באייפון – ספארי; במחשב – אדג׳ או כרום.</p>' : ''}</header>
+    ${!T.voices.length && !hasRec(u.id) ? '<p class="note">לא מצאנו בדפדפן קול בעברית, ננסה בכל זאת. אם לא שומעים: בטלפון אנדרואיד – כרום; באייפון – ספארי; במחשב – אדג׳ או כרום.</p>' : ''}</header>
     <div class="tbar"><button class="btn primary" id="t_play">${T.on ? '⏸ השהיה' : '▶ האזנה'}</button><button class="btn ghost sm" id="t_prev" aria-label="משפט קודם">→</button><button class="btn ghost sm" id="t_next" aria-label="משפט הבא">←</button>
       <label class="note">מהירות <select id="t_rate">${[0.85, 1, 1.15, 1.3, 1.5].map(r => `<option value="${r}" ${T.rate === r ? 'selected' : ''}>${r}×</option>`).join('')}</select></label>
+      ${hasRec(u.id) && T.voices.length || T.voices.length > 1 ? `<label class="note">קול <select id="t_voice">${hasRec(u.id) ? `<option value="rec" ${rec(u.id) ? 'selected' : ''}>הקלטת הקורס</option>` : ''}${T.voices.map((v, k) => `<option value="${esc(v.name)}" ${!rec(u.id) && devVoice(u.id) === v ? 'selected' : ''}>${esc(v.name.replace(/^(Microsoft|Google|Apple)\s*/i, '').replace(/\s*-\s*Hebrew.*$|\s*\(Hebrew.*\)$/i, '') || 'עברית')}${k === 0 && vScore(v) >= 2 ? ' (מומלץ)' : ''}</option>`).join('')}</select></label>` : ''}
       <label class="note"><input type="checkbox" id="t_auto" ${T.auto ? 'checked' : ''}> להמשיך לפרק הבא</label></div>
     <section class="panel talk">${ep.lines.map((l, k) => `<p class="tline ${l.s === F_HOST ? 'noa' : 'itai'} ${k === T.i ? 'on' : ''}" data-k="${k}">${l.s === 'קריין' ? '' : `<b>${esc(l.s)}</b> `}${esc(plain(l.x))}</p>`).join('')}</section>
     <div class="row"><button class="btn" data-go="unit" data-arg="${u.id}">לשיעור הכתוב</button>${UNITS[i + 1] ? `<button class="btn ghost" data-go="listen" data-arg="${UNITS[i + 1].id}">לפרק הבא ‹</button>` : ''}</div>`;
   $('#t_play').onclick = () => { if (T.on) { stopTalk(); markLine(); } else { if (T.i >= ep.lines.length) T.i = 0; T.on = true; sayLine(); } };
   $('#t_auto').onchange = e => { T.auto = e.target.checked; };
+  const tv = $('#t_voice'); if (tv) tv.onchange = e => { const on = T.on; stopTalk(); T.pick = e.target.value; try { localStorage.setItem(VKEY, T.pick); } catch (x) {} drawTalk(); if (on) { T.on = true; sayLine(); } };
   $('#t_prev').onclick = () => { T.i = Math.max(0, T.i - 1); if (T.on) sayLine(); else markLine(); };
   $('#t_next').onclick = () => { T.i = Math.min(ep.lines.length - 1, T.i + 1); if (T.on) sayLine(); else markLine(); };
   $('#t_rate').onchange = e => { T.rate = +e.target.value; if (A.el) A.el.playbackRate = T.rate; if (T.on && !rec(T.u)) sayLine(); };
