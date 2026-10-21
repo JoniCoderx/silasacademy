@@ -1643,12 +1643,14 @@ function unitRow(u) {
 function vLearn(m) { m.innerHTML = crumbs(['לימוד', 'learn']) + `<header class="page"><h2>לימוד</h2><p class="note">כל יחידה: מה המודל אומר, איך מזהים אותו בסיפור, ומלכודות של המבחן.</p><div class="row"><button class="btn" data-go="scope">📋 מה במבחן: רשימת המרצה</button></div></header><section class="panel"><div class="ulist">${UNITS.map(unitRow).join('')}</div></section>`; }
 
 // ---------- what is on the exam (the lecturer's list) ----------
+const onList = id => !!(U[id] && (U[id].scope || []).length); // units on the lecturer's exam list (mock exams draw only from these)
+const NOTLISTED = 'היחידה בסילבוס הרשמי של המכללה, אבל לא ברשימה שהמרצה נתן. כדאי לעבור עליה אחרי יחידות 1–5. מבחני האימון לא כוללים אותה.';
 const hIndex = (u, h) => u.blocks.findIndex(b => b.t === 'h' && b.x === h);
 const scopeItems = u => (u.scope || []).map(s => `<li class="${s.imp > 1 ? 'imp' : ''}"><button class="scl" data-go="unit" data-arg="${u.id}" data-h="${hIndex(u, s.h)}"><span class="ref">${esc(s.ref)}</span><span>${s.imp > 1 ? '<b class="star">חשוב</b> ' : ''}${rich(s.x)}</span></button></li>`).join('');
 const outItems = u => (u.outScope || []).map(x => `<li>${esc(x)}</li>`).join('');
 function vScope(m) {
   m.innerHTML = crumbs(['לימוד', 'learn'], ['מה במבחן']) + `<header class="page"><h2>מה במבחן</h2><p class="note">הרשימה שהמרצה נתן, נושא אחרי נושא. לוחצים על נושא ומגיעים ישר להסבר שלו. <b class="star">חשוב</b> = המרצה הדגיש. בתחילת הרשימה: לשלוט בכל ההגדרות, ענף, סקטור ופלח.</p></header>
-    ${UNITS.map((u, i) => `<section class="panel scope"><h4>יחידה ${i + 1}: ${esc(u.title)}</h4>${(u.scope || []).length ? `<ul class="scl-list">${scopeItems(u)}</ul>` : '<p class="note">היחידה לא מופיעה ברשימה שהמרצה נתן.</p>'}
+    ${UNITS.map((u, i) => `<section class="panel scope"><h4>יחידה ${i + 1}: ${esc(u.title)}</h4>${(u.scope || []).length ? `<ul class="scl-list">${scopeItems(u)}</ul>` : `<p class="note">${NOTLISTED}</p>`}
       ${(u.outScope || []).length ? `<div class="outnote"><b>לא במבחן:</b><ul>${outItems(u)}</ul></div>` : ''}</section>`).join('')}`;
 }
 function lessonBody(u) { // sections the lecturer left out of the exam stay readable, folded under "לא במבחן"
@@ -1682,6 +1684,7 @@ function vUnit(m) {
     <header class="page"><span class="eyebrow">יחידה ${i + 1} מתוך ${UNITS.length}</span><h2>${esc(u.title)}</h2>${u.blurb ? `<p class="lead">${esc(u.blurb)}</p>` : ''}</header>
     <div class="row"><button class="btn primary" data-go="listen" data-arg="${u.id}">🎧 להאזין להסבר של היחידה</button></div>
     ${(u.scope || []).length ? `<details class="panel scope uscope" open><summary><b>📋 מה מהיחידה במבחן</b> <span class="note">(רשימת המרצה)</span></summary><ul class="scl-list">${scopeItems(u)}</ul>${(u.outScope || []).length ? `<div class="outnote"><b>לא במבחן:</b><ul>${outItems(u)}</ul></div>` : ''}</details>` : ''}
+    ${(u.scope || []).length ? '' : `<div class="panel scope uscope"><b>📋 במבחן?</b><p class="note">${NOTLISTED}</p></div>`}
     ${u.mnemonic ? `<div class="lbox casel"><b>טריק לזכירה</b><p>${rich(u.mnemonic)}</p></div>` : ''}
     <div class="lbody">${lessonBody(u)}</div>
     ${(u.cheat || []).length ? `<section class="panel cheatbox"><h4>שליפים של היחידה</h4><ul class="ll">${u.cheat.map(c => `<li>${rich(c)}</li>`).join('')}</ul></section>` : ''}
@@ -1876,7 +1879,7 @@ function vExam(m) {
   const best = id => { const r = S.exams.filter(e => e.id === id); return r.length ? Math.max(...r.map(e => e.score)) : null; };
   m.innerHTML = crumbs(['מבחנים', 'exam']) + `<header class="page"><h2>מבחנים</h2><p class="note">כמו במבחן האמיתי: חלק א׳ – 10 שאלות אמריקאיות (4 נק׳ לשאלה), חלק ב׳ – 10 היגדים של נכון/לא נכון עם נימוק (6 נק׳: 3 על הסימון ו־3 על הנימוק). שעתיים, בלי חומר עזר.</p></header>
     <section class="panel"><div class="ulist">${CAR.exams.map(x => `<button class="urow" data-start="${x.id}"><span class="un">★</span><span class="ut"><b>${esc(x.title)}</b><span class="note">${esc(x.note || '')}</span></span><span class="up">${best(x.id) != null ? `<span class="done">הכי טוב: ${best(x.id)}</span>` : ''}</span></button>`).join('')}
-    ${BANK.length >= 10 && TFB.length >= 10 ? `<button class="urow" data-start="mock"><span class="un">✦</span><span class="ut"><b>מבחן אימון חדש</b><span class="note">10 אמריקאיות + 10 נכון/לא נכון מכל היחידות, בכל פעם אחרות</span></span><span class="up">${best('mock') != null ? `<span class="done">הכי טוב: ${best('mock')}</span>` : ''}</span></button>` : ''}</div></section>
+    ${BANK.length >= 10 && TFB.length >= 10 ? `<button class="urow" data-start="mock"><span class="un">✦</span><span class="ut"><b>מבחן אימון חדש</b><span class="note">10 אמריקאיות + 10 נכון/לא נכון מהחומר שברשימת המרצה, בכל פעם אחרות</span></span><span class="up">${best('mock') != null ? `<span class="done">הכי טוב: ${best('mock')}</span>` : ''}</span></button>` : ''}</div></section>
     <section class="panel"><h4>איך כותבים נימוק שמקבל 3 נקודות</h4><ul class="ll"><li>משפט אחד או שניים, לא יותר.</li><li>אם ההיגד <b>לא נכון</b>: אומרים מה כן נכון (למשל "זו מנהיגות בעלות, לא בידול").</li><li>משתמשים במונח של הקורס ובהגדרה שלו.</li></ul></section>`;
   m.querySelectorAll('[data-start]').forEach(b => b.onclick = () => startExam(b.dataset.start));
 }
@@ -1887,7 +1890,7 @@ function spread(list, n) { // n random items, spread over the units so every uni
   return out;
 }
 function startExam(id) {
-  const ex = CAR.exams.find(e => e.id === id) || {id: 'mock', title: 'מבחן אימון', mc: spread(BANK, 10), tf: spread(TFB, 10)};
+  const ex = CAR.exams.find(e => e.id === id) || {id: 'mock', title: 'מבחן אימון', mc: spread(BANK.filter(q => onList(q.unit)), 10), tf: spread(TFB.filter(q => onList(q.unit)), 10)};
   Object.assign(X, {id, ex, start: Date.now(), ans: {}, tf: {}, why: {}, self: {}, done: false}); clearInterval(X.t);
   keepX(); X.t = setInterval(tickX, 1000); render(); window.scrollTo(0, 0);
 }
