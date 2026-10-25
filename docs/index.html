@@ -1424,6 +1424,8 @@ const COURSES = [
    blurb: 'כל המודלים של הקורס בשפה פשוטה: הולנד, שיין, דרייבר, גרינהאוס, חמשת הגדולים, קבלת החלטות ופוליטיקה ארגונית.', facts: ['שליפים לזכירה מהירה', 'המבחן לדוגמה פתור', 'מבחני אימון עם הסברים', 'תוכנית לערב המבחן']},
   {id: 'strategy', open: true, href: '/strategy/', title: 'אסטרטגיה עסקית', tag: 'ניהול עסקי',
    blurb: 'כל המודלים של הקורס בשפה פשוטה: PESTEL, חמשת הכוחות של פורטר, שרשרת הערך, SWOT, האסטרטגיות הגנריות, חדשנות ויישום.', facts: ['שליפים לזכירה מהירה', 'המבחן לדוגמה פתור', 'נכון/לא נכון עם נימוק לדוגמה', 'מבחני אימון עם הסברים']},
+  {id: 'advanced', open: true, href: '/advanced/', title: 'ניהול אסטרטגי מתקדם', tag: 'ניהול עסקי',
+   blurb: 'כל המודלים של הקורס בשפה פשוטה: מודל היהלום, חמשת הכוחות, אוקיינוס כחול, VRIN, SWOT ו-TOWS, סוגי חדשנות, אנסוף ואסטרטגיות בינלאומיות.', facts: ['שליפים לזכירה מהירה', 'שאלות סיפור בסגנון המבחן', 'נכון/לא נכון עם נימוק', 'מבחני אימון עם הסברים']},
   {id: 'next', open: false, title: 'קורסים נוספים', tag: 'בקרוב', blurb: 'קורסים חדשים יעלו כאן בקרוב.', facts: []}
 ];
 
@@ -5715,7 +5717,10 @@ document.addEventListener('click', e => {
 });
 const LOGO_S = `<svg class="alogo" viewBox="0 0 64 64" aria-hidden="true"><use href="#brandmark"/></svg>`;
 // course cover art: a bell curve over an answer-sheet row, the marked bubble in highlighter yellow
-const COVER = {'strategy': `<svg viewBox="0 0 400 112" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+const COVER = {'advanced': `<svg viewBox="0 0 400 112" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+  <g stroke="rgb(255 255 255 / .07)">${[...Array(15)].map((_, k) => `<line x1="${k * 28}" y1="0" x2="${k * 28}" y2="112"/>`).join('')}${[...Array(5)].map((_, k) => `<line x1="0" y1="${k * 28}" x2="400" y2="${k * 28}"/>`).join('')}</g>
+  <g fill="none" stroke="#8e9cff" stroke-width="3" stroke-linejoin="round"><rect x="150" y="16" width="100" height="80" rx="6"/><path d="M200 16 V96 M150 56 H250"/></g>
+  <rect x="203" y="59" width="44" height="34" rx="4" fill="#f5d547" fill-opacity=".55"/><path d="M120 96 L270 12" stroke="rgb(255 255 255 / .35)" stroke-width="2.5" stroke-dasharray="4 5" fill="none"/></svg>`, 'strategy': `<svg viewBox="0 0 400 112" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
   <g stroke="rgb(255 255 255 / .07)">${[...Array(15)].map((_, k) => `<line x1="${k * 28}" y1="0" x2="${k * 28}" y2="112"/>`).join('')}${[...Array(5)].map((_, k) => `<line x1="0" y1="${k * 28}" x2="400" y2="${k * 28}"/>`).join('')}</g>
   <g fill="none" stroke="#8e9cff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><circle cx="200" cy="56" r="34"/><circle cx="200" cy="56" r="20" stroke-opacity=".6"/><path d="M130 96 L176 66"/></g>
   <circle cx="200" cy="56" r="7" fill="#f5d547"/><path d="M234 22 l14 -8 M234 22 l2 14" stroke="rgb(255 255 255 / .35)" stroke-width="2.5" fill="none" stroke-linecap="round"/></svg>`, 'career': `<svg viewBox="0 0 400 112" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
