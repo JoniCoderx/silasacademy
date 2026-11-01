@@ -13,7 +13,7 @@
 <link rel="preconnect" href="https://cdn.jsdelivr.net">
 <link rel="preload" as="script" href="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.50.0/dist/umd/supabase.js">
 <link rel="preconnect" href="https://tsgbbmsqxxhggsmxjqpm.supabase.co" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700;800&family=IBM+Plex+Sans+Hebrew:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700;800&family=IBM+Plex+Sans+Hebrew:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" onload="this.onload=null;this.rel='stylesheet'"><noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700;800&family=IBM+Plex+Sans+Hebrew:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap"></noscript>
 <style>
 /* Silas Academy. Modern study product: ink-blue structure, one highlighter-yellow signal (the marked answer), soft elevated cards on a cool paper ground. Display: Rubik. Text: IBM Plex Sans Hebrew. Numbers: Plex Mono. */
 :root{
@@ -658,6 +658,7 @@ nav.tabs{mask-image:linear-gradient(to left,#000 calc(100% - 28px),transparent);
 @media (max-width:640px){body:not([data-view="home"]) .wafab{width:52px;height:52px;padding:0;justify-content:center}body:not([data-view="home"]) .wafab .walabel{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}}
 
 .wafab[hidden]{display:none}
+#main{min-height:calc(100vh - 150px)} /* the footer starts below the fold, so it does not jump when the page draws */
 @media (max-width:720px){#main{padding-bottom:84px}} /* the last button on a phone page never sits under the WhatsApp button */
 @media print{.wafab{display:none}}
 /* admin: share a learner's place on WhatsApp */
