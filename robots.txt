@@ -1,4 +1,3 @@
 User-agent: *
 Allow: /
-Disallow: /*.sql$
 Sitemap: https://silasacademy.com/sitemap.xml
