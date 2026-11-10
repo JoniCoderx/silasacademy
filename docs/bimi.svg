@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg version="1.2" baseProfile="tiny-ps" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+<title>Silas Academy</title>
+<rect width="64" height="64" fill="#2337b4"/>
+<path d="M39.5 21.5 A9.6 9.6 0 1 0 31 32 A9.6 9.6 0 1 1 22.5 42.8" fill="none" stroke="#ffffff" stroke-width="7.4" stroke-linecap="round"/>
+<circle cx="46" cy="16.5" r="4.9" fill="#f5d547"/>
+</svg>
